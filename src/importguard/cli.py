@@ -12,6 +12,25 @@ from .core import check_import
 from .models import ImportResult
 
 
+def _supports_unicode() -> bool:
+    """Check if the terminal supports Unicode output."""
+    # Check if stdout encoding supports common Unicode characters
+    try:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        # Try encoding our symbols
+        "✓✗→".encode(encoding)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+# Use ASCII fallbacks on terminals that don't support Unicode (e.g., Windows cp1252)
+_UNICODE_OK = _supports_unicode()
+_CHECK = "✓" if _UNICODE_OK else "[OK]"
+_CROSS = "✗" if _UNICODE_OK else "[FAIL]"
+_ARROW = "→" if _UNICODE_OK else "->"
+
+
 def format_time(ms: float) -> str:
     """Format time in milliseconds for display."""
     if ms >= 1000:
@@ -36,19 +55,19 @@ def print_result(
 
     # Handle import failure specially
     if result.import_failed:
-        print(f"{red}✗ FAIL:{reset} {result.module} failed to import")
+        print(f"{red}{_CROSS} FAIL:{reset} {result.module} failed to import")
         if result.error_message:
             # Indent error message lines
             for line in result.error_message.splitlines():
-                print(f"  {red}→{reset} {line}")
+                print(f"  {red}{_ARROW}{reset} {line}")
         return
 
     # Status line for successful import
     if result.passed:
-        status = "✓"
+        status = _CHECK
         color = green
     else:
-        status = "✗ FAIL:"
+        status = f"{_CROSS} FAIL:"
         color = red
 
     time_str = format_time(result.total_ms)
@@ -66,7 +85,7 @@ def print_result(
 
     # Print violations
     for violation in result.violations:
-        print(f"  {color}→{reset} {violation}")
+        print(f"  {color}{_ARROW}{reset} {violation}")
 
     # Print top imports (only if showing details)
     if result.imports and not quiet:
