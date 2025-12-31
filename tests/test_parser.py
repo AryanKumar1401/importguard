@@ -1,6 +1,10 @@
 """Tests for the importtime output parser."""
 
-from importguard.parser import find_banned_imports, parse_importtime_output
+from importguard.parser import (
+    find_banned_imports,
+    parse_importtime_output,
+    parse_wall_time_sentinel,
+)
 
 
 class TestParseImporttimeOutput:
@@ -118,3 +122,48 @@ import time:       100 |        200 | torch.nn
         found = find_banned_imports(timings, {"pandas"})
 
         assert found == []
+
+
+class TestParseWallTimeSentinel:
+    """Tests for parse_wall_time_sentinel."""
+
+    def test_parse_valid_sentinel(self) -> None:
+        """Test parsing a valid wall-time sentinel."""
+        stdout = "__importguard_wall_time_us__:123456"
+
+        result = parse_wall_time_sentinel(stdout)
+
+        assert result == 123456
+
+    def test_parse_sentinel_with_other_output(self) -> None:
+        """Test parsing sentinel among other output."""
+        stdout = """\
+Some other output
+__importguard_wall_time_us__:999888
+More output
+"""
+        result = parse_wall_time_sentinel(stdout)
+
+        assert result == 999888
+
+    def test_parse_missing_sentinel(self) -> None:
+        """Test parsing when sentinel is missing."""
+        stdout = "Just some output without sentinel"
+
+        result = parse_wall_time_sentinel(stdout)
+
+        assert result == 0
+
+    def test_parse_empty_output(self) -> None:
+        """Test parsing empty output."""
+        result = parse_wall_time_sentinel("")
+
+        assert result == 0
+
+    def test_parse_invalid_value(self) -> None:
+        """Test parsing sentinel with non-numeric value."""
+        stdout = "__importguard_wall_time_us__:not_a_number"
+
+        result = parse_wall_time_sentinel(stdout)
+
+        assert result == 0

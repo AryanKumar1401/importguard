@@ -29,14 +29,27 @@ def print_result(
     if quiet and result.passed:
         return
 
-    # Status line
+    # Color codes
+    green = "\033[32m"
+    red = "\033[31m"
+    reset = "\033[0m"
+
+    # Handle import failure specially
+    if result.import_failed:
+        print(f"{red}✗ FAIL:{reset} {result.module} failed to import")
+        if result.error_message:
+            # Indent error message lines
+            for line in result.error_message.splitlines():
+                print(f"  {red}→{reset} {line}")
+        return
+
+    # Status line for successful import
     if result.passed:
         status = "✓"
-        color_start = "\033[32m"  # green
+        color = green
     else:
         status = "✗ FAIL:"
-        color_start = "\033[31m"  # red
-    color_end = "\033[0m"
+        color = red
 
     time_str = format_time(result.total_ms)
 
@@ -49,13 +62,13 @@ def print_result(
     if result.num_runs > 1 and result.median_ms is not None:
         msg_parts.append(f"[median of {result.num_runs} runs]")
 
-    print(f"{color_start}{status}{color_end} {' '.join(msg_parts)}")
+    print(f"{color}{status}{reset} {' '.join(msg_parts)}")
 
     # Print violations
     for violation in result.violations:
-        print(f"  {color_start}→{color_end} {violation}")
+        print(f"  {color}→{reset} {violation}")
 
-    # Print top imports (only if passed or showing details)
+    # Print top imports (only if showing details)
     if result.imports and not quiet:
         print()
         print(f"Top {min(top_n, len(result.imports))} slowest imports:")

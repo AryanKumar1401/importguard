@@ -11,6 +11,7 @@ class ViolationType(Enum):
 
     EXCEEDED_BUDGET = "exceeded_budget"
     BANNED_IMPORT = "banned_import"
+    IMPORT_FAILED = "import_failed"
 
 
 @dataclass
@@ -48,6 +49,31 @@ class Violation:
 
 
 @dataclass
+class SubprocessResult:
+    """Result of running the import timing subprocess."""
+
+    exit_code: int
+    stderr: str
+    stdout: str
+    importtime_us: int  # Time from -X importtime parsing (max cumulative)
+    wall_time_us: int  # Backup wall-clock time from perf_counter sentinel
+    timings: list[ImportTiming] = field(default_factory=list)
+    error_message: str | None = None  # Error/exception info if import failed
+    import_failed: bool = False
+
+    @property
+    def best_time_us(self) -> int:
+        """Return the most accurate timing available.
+
+        Prefer importtime (more accurate) over wall time.
+        Wall time includes interpreter startup overhead.
+        """
+        if self.importtime_us > 0:
+            return self.importtime_us
+        return self.wall_time_us
+
+
+@dataclass
 class ImportResult:
     """Result of an import check."""
 
@@ -60,6 +86,12 @@ class ImportResult:
     # For --repeat functionality
     all_times_us: list[int] = field(default_factory=list)
     num_runs: int = 1
+
+    # Subprocess execution details
+    exit_code: int = 0
+    error_message: str | None = None
+    import_failed: bool = False
+    wall_time_us: int = 0  # Backup wall-clock measurement
 
     @property
     def total_ms(self) -> float:
@@ -95,13 +127,15 @@ class ImportResult:
 
     def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for JSON output."""
-        return {
+        result: dict[str, object] = {
             "module": self.module,
             "total_ms": self.total_ms,
             "median_ms": self.median_ms,
             "min_ms": self.min_ms,
             "num_runs": self.num_runs,
             "passed": self.passed,
+            "import_failed": self.import_failed,
+            "exit_code": self.exit_code,
             "violations": [
                 {"type": v.type.value, "message": v.message, "module": v.module}
                 for v in self.violations
@@ -116,3 +150,8 @@ class ImportResult:
                 for i in self.top_imports()
             ],
         }
+        if self.error_message:
+            result["error_message"] = self.error_message
+        if self.wall_time_us > 0:
+            result["wall_time_ms"] = self.wall_time_us / 1000.0
+        return result

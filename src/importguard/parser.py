@@ -10,6 +10,29 @@ from .models import ImportTiming
 # Example: "import time:       234 |        567 | module.name"
 IMPORTTIME_PATTERN = re.compile(r"^import time:\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\s*)(.+)$")
 
+# Sentinel pattern for wall-time backup measurement
+# Example: "__importguard_wall_time_us__:123456"
+WALL_TIME_SENTINEL = "__importguard_wall_time_us__:"
+
+
+def parse_wall_time_sentinel(output: str) -> int:
+    """
+    Extract wall-time measurement from sentinel line in stdout.
+
+    Args:
+        output: stdout from the subprocess
+
+    Returns:
+        Wall time in microseconds, or 0 if not found
+    """
+    for line in output.splitlines():
+        if line.startswith(WALL_TIME_SENTINEL):
+            try:
+                return int(line[len(WALL_TIME_SENTINEL) :])
+            except ValueError:
+                pass
+    return 0
+
 
 def parse_importtime_output(stderr: str) -> tuple[list[ImportTiming], int]:
     """
