@@ -277,7 +277,7 @@ Prevent accidental cross-module imports that pull in the kitchen sink.
 Contributions welcome! Please open an issue first to discuss what you'd like to change.
 
 ```bash
-git clone https://github.com/yourname/importguard
+git clone https://github.com/AryanKumar1401/importguard
 cd importguard
 pip install -e ".[dev]"
 pytest
