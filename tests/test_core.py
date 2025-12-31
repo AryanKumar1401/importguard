@@ -37,7 +37,10 @@ class TestRunImportSubprocess:
         assert result.exit_code != 0
         assert result.import_failed is True
         assert result.error_message is not None
-        assert "ModuleNotFoundError" in result.error_message or "No module named" in result.error_message
+        assert (
+            "ModuleNotFoundError" in result.error_message
+            or "No module named" in result.error_message
+        )
 
     def test_subprocess_with_custom_python(self) -> None:
         """Test subprocess with explicit Python path."""
