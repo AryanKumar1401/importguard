@@ -81,6 +81,7 @@ class ImportResult:
     total_time_us: int  # total import time in microseconds
     imports: list[ImportTiming] = field(default_factory=list)
     violations: list[Violation] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)  # Non-fatal warnings
     banned_found: list[str] = field(default_factory=list)
 
     # For --repeat functionality
@@ -126,7 +127,16 @@ class ImportResult:
         return sorted(self.imports, key=lambda x: x.self_time_us, reverse=True)[:n]
 
     def to_dict(self) -> dict[str, object]:
-        """Convert to dictionary for JSON output."""
+        """Convert to dictionary for JSON output.
+
+        Returns a machine-readable schema with:
+        - module: str
+        - total_ms: float
+        - top_imports: list[{module, self_ms, cumulative_ms}]
+        - passed: bool
+        - violations: list[{type, message, module}]
+        - warnings: list[str]
+        """
         result: dict[str, object] = {
             "module": self.module,
             "total_ms": self.total_ms,
@@ -140,6 +150,7 @@ class ImportResult:
                 {"type": v.type.value, "message": v.message, "module": v.module}
                 for v in self.violations
             ],
+            "warnings": self.warnings,
             "banned_found": self.banned_found,
             "top_imports": [
                 {

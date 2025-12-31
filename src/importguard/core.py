@@ -163,7 +163,7 @@ def run_import_timing(
 def check_import(
     module: str,
     max_ms: float | None = None,
-    banned: set[str] | None = None,
+    banned: set[str] | list[str] | None = None,
     python_path: str | None = None,
     repeat: int = 1,
 ) -> ImportResult:
@@ -173,14 +173,23 @@ def check_import(
     Args:
         module: The module to check
         max_ms: Maximum allowed import time in milliseconds
-        banned: Set of banned module names
+        banned: Set or list of banned module names
         python_path: Path to Python interpreter
         repeat: Number of times to repeat the measurement
 
     Returns:
         ImportResult with timing and violation information
+
+    Example:
+        >>> from importguard import check_import
+        >>> result = check_import("json", max_ms=100)
+        >>> print(f"Import took {result.total_ms:.1f}ms")
+        >>> if not result.passed:
+        ...     for v in result.violations:
+        ...         print(f"FAIL: {v}")
     """
-    banned = banned or set()
+    # Convert list to set if needed
+    banned_set: set[str] = set(banned) if banned else set()
     all_times_us: list[int] = []
     all_timings: list[ImportTiming] = []
     last_subprocess_result: SubprocessResult | None = None
@@ -252,8 +261,8 @@ def check_import(
             )
 
     # Check banned imports
-    if banned and not result.import_failed:
-        banned_found = find_banned_imports(all_timings, banned)
+    if banned_set and not result.import_failed:
+        banned_found = find_banned_imports(all_timings, banned_set)
         result.banned_found = banned_found
         for banned_module in banned_found:
             violations.append(
@@ -265,4 +274,21 @@ def check_import(
             )
 
     result.violations = violations
+
+    # Generate warnings (non-fatal issues)
+    warnings: list[str] = []
+
+    # Warn if using wall-time fallback (importtime failed to parse)
+    if last_subprocess_result:
+        if last_subprocess_result.importtime_us == 0 and last_subprocess_result.wall_time_us > 0:
+            warnings.append("Using wall-clock time (importtime parsing failed)")
+
+    # Warn if import time is close to budget (within 20%)
+    if max_ms is not None and not result.import_failed:
+        final_ms = final_time_us / 1000.0
+        if final_ms <= max_ms and final_ms > max_ms * 0.8:
+            headroom = max_ms - final_ms
+            warnings.append(f"Import time is close to budget ({headroom:.0f}ms headroom)")
+
+    result.warnings = warnings
     return result
