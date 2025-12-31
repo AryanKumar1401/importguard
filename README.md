@@ -212,6 +212,20 @@ result = check_import(
 if not result.passed:
     for violation in result.violations:
         print(f"FAIL: {violation}")
+
+# Reduce noise with repeated measurements
+result = check_import(
+    "mypkg",
+    repeat=5,  # Run 5 times, report median
+    max_ms=150
+)
+print(f"Median: {result.median_ms:.1f}ms across {result.num_runs} runs")
+
+# Use specific Python interpreter
+result = check_import(
+    "mypkg",
+    python_path="/usr/local/bin/python3.11"
+)
 ```
 
 ---
