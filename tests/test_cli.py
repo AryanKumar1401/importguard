@@ -111,3 +111,160 @@ class TestCLIIntegration:
 
         assert result.returncode == 0
         assert "json" in result.stdout
+
+
+class TestCLIConfigIntegration:
+    """Integration tests for CLI with config files."""
+
+    def test_config_file_applies_budget(self, tmp_path: pytest.TempPathFactory) -> None:
+        """Test that config file budget is applied."""
+        # Create a config file
+        config_file = tmp_path / ".importguard.toml"  # type: ignore[operator]
+        config_file.write_text(
+            """
+[importguard]
+max_total_ms = 100
+
+[importguard.budgets]
+"json" = 50
+"""
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "importguard",
+                "check",
+                "json",
+                "--config",
+                str(config_file),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["passed"] is True
+
+    def test_config_file_applies_bans(self, tmp_path: pytest.TempPathFactory) -> None:
+        """Test that config file bans are applied."""
+        config_file = tmp_path / ".importguard.toml"  # type: ignore[operator]
+        config_file.write_text(
+            """
+[importguard]
+
+[importguard.banned]
+"urllib.request" = ["ssl"]
+"""
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "importguard",
+                "check",
+                "urllib.request",
+                "--config",
+                str(config_file),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["passed"] is False
+        assert "ssl" in data["banned_found"]
+
+    def test_cli_overrides_config_budget(self, tmp_path: pytest.TempPathFactory) -> None:
+        """Test that CLI --max-ms overrides config budget."""
+        config_file = tmp_path / ".importguard.toml"  # type: ignore[operator]
+        config_file.write_text(
+            """
+[importguard]
+
+[importguard.budgets]
+"json" = 1
+"""
+        )
+
+        # Config says 1ms (would fail), but CLI says 5000ms (should pass)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "importguard",
+                "check",
+                "json",
+                "--config",
+                str(config_file),
+                "--max-ms",
+                "5000",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["passed"] is True
+
+    def test_cli_appends_to_config_bans(self, tmp_path: pytest.TempPathFactory) -> None:
+        """Test that CLI --ban appends to config bans."""
+        config_file = tmp_path / ".importguard.toml"  # type: ignore[operator]
+        config_file.write_text(
+            """
+[importguard]
+
+[importguard.banned]
+"urllib.request" = ["ssl"]
+"""
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "importguard",
+                "check",
+                "urllib.request",
+                "--config",
+                str(config_file),
+                "--ban",
+                "http",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        # Both ssl (from config) and http (from CLI) should be in banned_found
+        assert "ssl" in data["banned_found"]
+        assert "http" in data["banned_found"]
+
+    def test_config_file_not_found_error(self) -> None:
+        """Test error when config file doesn't exist."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "importguard",
+                "check",
+                "json",
+                "--config",
+                "nonexistent.toml",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+        assert "Config file not found" in result.stderr

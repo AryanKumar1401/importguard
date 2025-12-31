@@ -1,0 +1,15 @@
+[importguard]
+# Global budget for any module not explicitly configured
+max_total_ms = 500
+
+# Per-module budgets
+[importguard.budgets]
+"json" = 50
+"urllib.request" = 100
+"requests" = 200
+
+# Banned top-level imports per module
+[importguard.banned]
+"urllib.request" = ["ssl"]
+"requests" = ["pandas", "torch"]
+
