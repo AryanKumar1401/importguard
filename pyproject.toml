@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "importguard"
+name = "importguardpy"
 version = "0.1.0"
 description = "Measure and enforce import-time behavior in Python projects"
 readme = "README.md"

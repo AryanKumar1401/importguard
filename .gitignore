@@ -10,3 +10,4 @@ src/__pycache__/
 .coverage.*.*.*.*
 .coverage.*.*.*.*.*
 __pycache__/
+dist

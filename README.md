@@ -21,7 +21,7 @@ Python imports can quietly become a performance and reliability trap:
 ## Installation
 
 ```bash
-pip install importguard
+pip install importguardpy
 ```
 
 ---
@@ -164,7 +164,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
-          pip install importguard
+          pip install importguardpy
       
       - name: Check import performance
         run: |
