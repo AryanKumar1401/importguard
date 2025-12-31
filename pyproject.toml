@@ -8,24 +8,42 @@ version = "0.1.0"
 description = "Measure and enforce import-time behavior in Python projects"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Aryan Kumar" }]
+maintainers = [{ name = "Aryan Kumar" }]
 requires-python = ">=3.9"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Build Tools",
     "Typing :: Typed",
 ]
-keywords = ["import", "performance", "timing", "cli", "ci", "testing"]
+keywords = [
+    "import",
+    "performance", 
+    "timing",
+    "cli",
+    "ci",
+    "testing",
+    "startup",
+    "cold-start",
+    "profiling",
+    "lint",
+]
 dependencies = []
 
 [project.optional-dependencies]
@@ -41,8 +59,10 @@ importguard = "importguard.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/AryanKumar1401/importguard"
+Documentation = "https://github.com/AryanKumar1401/importguard#readme"
 Repository = "https://github.com/AryanKumar1401/importguard"
 Issues = "https://github.com/AryanKumar1401/importguard/issues"
+Changelog = "https://github.com/AryanKumar1401/importguard/releases"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/importguard"]

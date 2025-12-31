@@ -193,6 +193,164 @@ repos:
 
 ---
 
+## Why Results Differ on CI?
+
+Import times can vary significantly between your local machine and CI. Here's why and how to handle it:
+
+### Common Causes
+
+| Factor | Local | CI | Impact |
+|--------|-------|-----|--------|
+| **CPU** | Fast desktop/laptop | Shared VM cores | 2-5x slower |
+| **Disk** | SSD/NVMe | Network storage | Variable latency |
+| **Caching** | Warm `.pyc` files | Cold start | First run slower |
+| **Python version** | May differ | Matrix testing | Different stdlib |
+| **Dependencies** | Pinned versions | Fresh install | Version variance |
+
+### Recommendations
+
+1. **Use `--repeat 3` or `--repeat 5`** — Takes median to smooth out noise
+2. **Set CI budgets 2-3x higher** than local measurements
+3. **Use separate config sections** for CI vs local:
+
+```toml
+# .importguard.toml
+[importguard]
+max_total_ms = 200  # Local development
+
+# Override in CI with environment-specific config
+# or use: importguard check mypkg --max-ms 500
+```
+
+4. **Pin Python version** in CI to match local:
+
+```yaml
+- uses: actions/setup-python@v5
+  with:
+    python-version: '3.11.7'  # Exact version
+```
+
+5. **Warm up before measuring** (optional):
+
+```yaml
+- name: Warm up Python cache
+  run: python -c "import mypkg" || true
+
+- name: Check import performance  
+  run: importguard check mypkg --repeat 3
+```
+
+### Debugging CI Failures
+
+```bash
+# Get detailed JSON output for investigation
+importguard check mypkg --json > import-report.json
+
+# Compare top imports between local and CI
+importguard check mypkg --top 20
+```
+
+---
+
+## How to Keep Imports Fast
+
+### 1. Lazy Imports
+
+Move heavy imports inside functions that need them:
+
+```python
+# ❌ Bad: imports pandas at module load
+import pandas as pd
+
+def process_data(path):
+    return pd.read_csv(path)
+
+# ✅ Good: imports pandas only when needed
+def process_data(path):
+    import pandas as pd
+    return pd.read_csv(path)
+```
+
+### 2. Optional Dependencies
+
+Use try/except for optional heavy dependencies:
+
+```python
+# ✅ Good: graceful degradation
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+def train_model(data):
+    if not HAS_TORCH:
+        raise ImportError("torch required: pip install mypkg[ml]")
+    # ... use torch
+```
+
+### 3. Deferred Imports with `__getattr__`
+
+For library authors, use module-level `__getattr__`:
+
+```python
+# mypkg/__init__.py
+def __getattr__(name):
+    if name == "heavy_module":
+        from . import heavy_module
+        return heavy_module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+```
+
+### 4. Split Entry Points
+
+Separate your CLI from your library:
+
+```
+mypkg/
+├── __init__.py      # Lightweight, fast to import
+├── core.py          # Core functionality
+├── cli.py           # CLI-only, can import Click/Rich
+└── optional/
+    └── ml.py        # Heavy ML dependencies
+```
+
+```toml
+# pyproject.toml
+[project.scripts]
+mypkg = "mypkg.cli:main"  # CLI imports heavy deps
+```
+
+### 5. Avoid Import Side Effects
+
+```python
+# ❌ Bad: runs on import
+config = load_config()  # Network call!
+logger = setup_logging()  # Creates files!
+
+# ✅ Good: explicit initialization
+_config = None
+def get_config():
+    global _config
+    if _config is None:
+        _config = load_config()
+    return _config
+```
+
+### 6. Profile Before Optimizing
+
+Use importguard to find the actual culprits:
+
+```bash
+# Find the slowest imports
+importguard check mypkg --top 20
+
+# Ban known-heavy modules from your fast path
+importguard check mypkg.cli --ban pandas --ban torch --ban tensorflow
+```
+
+---
+
 ## Python API
 
 ```python
