@@ -72,6 +72,7 @@ def _parse_toml_simple(content: str) -> dict[str, Any]:
         if not line or line.startswith("#"):
             continue
 
+
         # Section header
         if line.startswith("[") and line.endswith("]"):
             section_name = line[1:-1].strip()
