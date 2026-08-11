@@ -1,3 +1,5 @@
+
+
 # importguard
 
 **Measure and enforce import-time behavior in Python projects.**
@@ -72,8 +74,7 @@ Import timing can be noisy. Use `--repeat` to run multiple times and report the 
 ```bash
 $ importguard check mypkg --max-ms 150 --repeat 5
 
-Running 5 iterations...
-✓ mypkg imported in 127ms (median of 5 runs: 118ms, 127ms, 132ms, 124ms, 129ms)
+✓ mypkg imported in 127ms (budget: 150ms) [median of 5 runs]
 ```
 
 This is especially useful in CI where timing variance can cause flaky failures.
@@ -452,4 +453,3 @@ MIT
 <p align="center">
   <strong>importguard</strong> — unit tests, but for import behavior
 </p>
-
