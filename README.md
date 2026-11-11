@@ -18,32 +18,51 @@ Linters read your source. importguard *runs* the import in a fresh interpreter a
 
 ## 60-second tour
 
+No config, no lockfile, no setup. In any git checkout, ask what your uncommitted or branch changes add to startup:
+
+```console
+$ importguard diff
+importguard diff · Python 3.13 · vs 221a634b07 (merge-base of HEAD and main) · policy from base
+
+✓ demoapp      2 modules (base 2) · 0ms
+✗ demoapp.cli  103 modules (base 77) · 34ms
+
+error    new third-party package at startup: bigdep (+20 modules, ~11ms); also pulls in stdlib: sqlite3, json, csv, http, socket, ...
+         src/demoapp/cli.py:2    → demoapp.report
+         src/demoapp/report.py:5 → bigdep
+         fix: defer the import at src/demoapp/report.py:5 - mark it `lazy` (Python 3.15+), list it in `__lazy_modules__`, or move it into the function that uses it
+               lazy import bigdep
+         or:  if this is intended, a maintainer approves it outside this change: label the pull request `importguard:allow:bigdep` or add it to `allow` on the base branch. Agents should not approve their own changes.
+
+error    network access during import in demoapp.telemetry (src/demoapp/telemetry.py:3): socket.getaddrinfo 127.0.0.1:9
+         src/demoapp/cli.py:8 → demoapp.telemetry
+         fix: move this out of module scope in demoapp.telemetry (e.g. into a function called explicitly or on first use)
+```
+
+Each finding is one place where new code enters the import graph. It shows the full chain, the line you control, and the exact fix. Problems that already existed on the base commit are not reported, so the first run on a legacy codebase is quiet and only new regressions fail.
+
+### The baseline lives outside the change
+
+When agents write most of the code, any baseline stored in the change can be moved by the change. An agent that hits a red check can regenerate a snapshot, add an ignore entry or loosen a config to turn it green. `diff` closes that route:
+
+- **The baseline is the merge-base commit.** It is checked out into a temporary git worktree and probed with the same interpreter. Nothing is stored in the repository, so there is nothing to regenerate.
+- **The policy comes from the base too.** `forbid`, `allow` and severities are read from the base commit's `pyproject.toml`. A change that loosens them still fails, gets a `policy_changed` warning, and takes effect only after a human reviews and merges it.
+- **Entrypoints are the union of base and head**, so deleting one from the config doesn't hide it.
+- **Approval happens outside the diff.** It comes from a pull-request label applied by a maintainer (`importguard:allow:<package>`, or `importguard:approved` for all), from `--allow` / `IMPORTGUARD_ALLOW` in CI, or from `allow` on the base branch. The fix offered for a new package never includes a command the agent can run to approve itself.
+
+The reviewer is left with one question per finding: "this PR adds `bigdep` to CLI startup through `report.py:5`. Intended?"
+
+### Lockfile mode
+
+To also catch changes that don't come from your code, such as a dependency upgrade that starts importing something new, record a baseline with `importguard snapshot` and gate on it with `importguard check`:
+
 ```console
 $ importguard snapshot            # record what each entrypoint loads -> importguard.lock
 ✓ demoapp: 2 modules · lightlib
 ✓ demoapp.cli: 77 modules · heavylib, lightlib
 ```
 
-Commit `importguard.lock`. Then a change adds a dependency three hops away:
-
-```console
-$ importguard check
-✗ demoapp.cli  99 modules (locked 77) · 32ms
-
-error    new third-party package at startup: bigdep (+20 modules, ~8ms); also pulls in stdlib: sqlite3, json, csv, http, socket, ...
-         src/demoapp/cli.py:2          → demoapp.report
-         src/demoapp/report.py:1       → demoapp.utils.frames
-         src/demoapp/utils/frames.py:2 → bigdep
-         fix: defer the import at src/demoapp/utils/frames.py:2 - mark it `lazy` (Python 3.15+), list it in `__lazy_modules__`, or move it into the function that uses it
-               lazy import bigdep
-         or:  importguard snapshot demoapp.cli
-
-error    network access during import in demoapp.telemetry (src/demoapp/telemetry.py:3): socket.getaddrinfo 127.0.0.1:9
-         src/demoapp/cli.py:3 → demoapp.telemetry
-         fix: move this out of module scope in demoapp.telemetry (e.g. into a function called explicitly or on first use)
-```
-
-Each finding is one place where new code enters the import graph. It shows the full chain, the line you control, and the exact fix. If the change is intended, `importguard snapshot` accepts it, and the lockfile diff shows reviewers what changed.
+Commit `importguard.lock`. `importguard check` then fails on anything new, with the same chains and fixes. Because `snapshot` accepts changes, the lockfile is something the change itself can rewrite. Where agents push code, protect it with CODEOWNERS, or use `diff` as the gate and keep the lockfile as an extra check.
 
 ### Prove what can be lazy (Python 3.15+)
 
@@ -79,6 +98,7 @@ Each candidate is labelled:
 
 | command | what it does |
 |---|---|
+| `importguard diff [ENTRY...]` | Report what the working tree adds to startup vs. its merge-base (`--base REF`, `--allow PKG`, `--policy-from base\|head`). No setup |
 | `importguard snapshot [ENTRY...]` | Record what each entrypoint imports into `importguard.lock` (accepts changes) |
 | `importguard check [ENTRY...]` | Fail on new packages vs. the lock, forbidden modules, and forbidden side effects |
 | `importguard check --changed [FILE...]` | Only re-check entrypoints whose startup graph contains a changed file (default: ask git). Fast enough for every agent turn |
@@ -101,8 +121,9 @@ Everything is optional. Without configuration, entrypoints are inferred from `[p
 [tool.importguard]
 entrypoints = ["mypkg", "mypkg.cli"]
 forbid = ["pandas", "torch"]                    # never at startup, even transitively
+allow = ["rich"]                                # approved third-party packages (diff reads this from the base commit)
 forbid_effects = ["network", "subprocess"]      # default; others (file_write, env, thread) warn
-new_packages = "error"                          # new third-party package vs lock: error|warning|info|ignore
+new_packages = "error"                          # new third-party package vs base/lock: error|warning|info|ignore
 new_stdlib = "info"
 new_first_party = "info"
 max_ms = 300                                    # advisory: a warning, never a failure...
@@ -133,9 +154,11 @@ importguard is designed to be called by agents as well as people:
   - a `confidence` (`verified` means it was observed at runtime);
   - typed `remedies`: `defer_import`, `make_lazy`, `keep_eager`, `accept`, ..., with `file`, `line`, the current `source` line and a suggested `replacement`.
 - **Deterministic verdicts:** an agent loop won't chase timing noise.
+- **Zero setup:** `importguard diff` works in any git checkout, so an agent can run it in a repository that has never heard of importguard (`uvx --from importguardpy importguard diff --json`, once 0.2 is released on PyPI).
+- **A check the agent cannot game:** in diff mode the baseline and policy come from the base commit, and approval needs a human (see above). The agent's only way to green is to fix the import.
 - **Cheap incremental checks:** `check --changed` re-probes only the entrypoints the edit can affect.
 
-See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code hook that runs `importguard check --changed` before an agent finishes its turn.
+See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code hook that runs `importguard diff` before an agent finishes its turn.
 
 ## CI
 
@@ -150,22 +173,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }            # history for the merge-base
       - uses: actions/setup-python@v5
-        with: { python-version: "3.13" }   # same minor version as your lock
+        with: { python-version: "3.13" }
       - run: pip install -e .
       - uses: AryanKumar1401/importguard@main
         with:
           comment: true                     # keeps one PR comment updated with the report
+          # mode: check                     # gate on importguard.lock instead of the base commit
 ```
 
-The action writes a Markdown report to the job summary, optionally keeps a PR comment updated, and fails the job on violations. With pre-commit:
+By default the action runs `importguard diff` against the PR's base. It writes a Markdown report to the job summary, optionally keeps a PR comment updated, and fails the job on violations. A maintainer approves an intended new startup dependency by adding the label `importguard:allow:<package>` to the PR.
+
+Labels are only as trustworthy as the people and tokens that can set them. If agents run with a token that can label pull requests, rely on `allow` in the base branch's `pyproject.toml` instead, protected by branch protection or CODEOWNERS.
+
+With pre-commit:
 
 ```yaml
 - repo: local
   hooks:
     - id: importguard
       name: importguard
-      entry: importguard check --changed
+      entry: importguard diff --base HEAD
       language: system
       pass_filenames: false
 ```

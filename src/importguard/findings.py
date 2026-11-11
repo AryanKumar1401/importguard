@@ -27,7 +27,8 @@ class Step:
 
 @dataclass
 class Remedy:
-    kind: str  # defer_import | accept | fix_error | investigate | make_lazy | keep_eager
+    # defer_import | accept | request_approval | fix_error | investigate | make_lazy | keep_eager
+    kind: str
     summary: str
     file: str | None = None
     line: int | None = None
@@ -158,6 +159,7 @@ REPORT_SCHEMA: dict[str, Any] = {
                             "lazy_safe",
                             "lazy_unsafe",
                             "lazy_unexercised",
+                            "policy_changed",
                         ]
                     },
                     "severity": {"enum": ["error", "warning", "info"]},
@@ -189,6 +191,7 @@ REPORT_SCHEMA: dict[str, Any] = {
                                     "enum": [
                                         "defer_import",
                                         "accept",
+                                        "request_approval",
                                         "fix_error",
                                         "investigate",
                                         "make_lazy",

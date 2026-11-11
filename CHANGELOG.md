@@ -10,6 +10,15 @@ A redesign. importguard now records runtime ground truth about imports, and its
 verdicts no longer depend on millisecond thresholds. Nothing from 0.1 is kept.
 
 ### Added
+- **`importguard diff`**: reports what the working tree adds to startup compared with its merge-base commit. It needs no setup and has nothing for the change to tamper with:
+  - the base is checked out into a temporary git worktree and probed with the same interpreter; nothing is stored in the repository;
+  - only problems the change introduced are reported (new packages, newly forbidden imports, new side effects), so adoption on a legacy codebase is quiet;
+  - policy (`forbid`, `allow`, severities) is read from the base commit, so a change cannot loosen its own rules; edits to `[tool.importguard]` get a `policy_changed` warning;
+  - entrypoints are the union of base and head configs;
+  - approvals come from outside the change: `--allow`, `IMPORTGUARD_ALLOW`, `allow` on the base branch, or PR labels (`importguard:allow:<pkg>`, `importguard:approved`) in the GitHub Action;
+  - new-package findings offer a `request_approval` remedy instead of a command the agent could run to approve itself.
+- `allow` policy key (approved third-party packages).
+- The GitHub Action runs `diff` by default (`mode: check` for lockfile mode).
 - **Probe engine**: imports each entrypoint in a fresh interpreter and records:
   - every module loaded, with the importing module, file and line (`sys.meta_path` observer);
   - side effects during import (network, subprocess, file writes, environment, threads) via audit hooks, attributed to the module whose top-level code ran them.

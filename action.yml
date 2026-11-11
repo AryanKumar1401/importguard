@@ -1,14 +1,27 @@
 name: importguard
 description: >-
-  Gate what your Python entrypoints import at startup: new dependencies, forbidden
-  modules and import-time side effects, reported with the exact line to change.
+  Report what a pull request adds to your Python entrypoints' startup imports (new
+  dependencies, forbidden modules, import-time side effects) with the exact line to
+  change. No setup: the baseline is the PR's base commit.
 branding:
   icon: shield
   color: green
 
 inputs:
+  mode:
+    description: "`diff` (default): report what the PR adds vs. its base commit, no setup needed. `check`: compare against importguard.lock."
+    required: false
+    default: diff
+  base:
+    description: "diff mode: base commit (default: the PR's base, or the previous commit on push)."
+    required: false
+    default: ""
+  allow-label-prefix:
+    description: "diff mode: a PR label `<prefix><package>` approves that new startup package; the label `importguard:approved` approves all."
+    required: false
+    default: "importguard:allow:"
   args:
-    description: Extra arguments for `importguard check` (e.g. entrypoints, --strict).
+    description: Extra arguments (e.g. entrypoints, --strict).
     required: false
     default: ""
   python:
@@ -40,12 +53,40 @@ runs:
       id: check
       shell: bash
       env:
+        IG_MODE: ${{ inputs.mode }}
         IG_ARGS: ${{ inputs.args }}
         IG_PYTHON: ${{ inputs.python }}
+        IG_BASE: ${{ inputs.base || github.event.pull_request.base.sha || github.event.before }}
+        IG_PREFIX: ${{ inputs.allow-label-prefix }}
+        IG_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
       run: |
+        cmd=(check)
+        if [ "$IG_MODE" = "diff" ]; then
+          cmd=(diff)
+          if [ -n "$IG_BASE" ] && ! [[ "$IG_BASE" =~ ^0+$ ]]; then
+            # Make sure the base commit and enough history for a merge-base are present.
+            git fetch --no-tags --quiet origin "$IG_BASE" 2>/dev/null || true
+            if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+              git fetch --no-tags --quiet --unshallow origin 2>/dev/null || true
+            fi
+            cmd+=(--base "$IG_BASE")
+          fi
+          # Approvals come from PR labels, which the change itself cannot add.
+          allow=()
+          while IFS= read -r label; do
+            case "$label" in
+              importguard:approved) allow+=("*") ;;
+              "$IG_PREFIX"?*) allow+=("${label#"$IG_PREFIX"}") ;;
+            esac
+          done < <("$IG_PYTHON" -c 'import json, os; print("\n".join(json.loads(os.environ.get("IG_LABELS") or "null") or []))')
+          if [ "${#allow[@]}" -gt 0 ]; then
+            IMPORTGUARD_ALLOW="$(IFS=,; echo "${allow[*]}")"
+            export IMPORTGUARD_ALLOW
+          fi
+        fi
         set +e
         # shellcheck disable=SC2086
-        "$IG_PYTHON" -m importguard check --python "$IG_PYTHON" --format markdown $IG_ARGS > "$RUNNER_TEMP/importguard.md"
+        "$IG_PYTHON" -m importguard "${cmd[@]}" --python "$IG_PYTHON" --format markdown $IG_ARGS > "$RUNNER_TEMP/importguard.md"
         code=$?
         set -e
         cat "$RUNNER_TEMP/importguard.md" >> "$GITHUB_STEP_SUMMARY"
