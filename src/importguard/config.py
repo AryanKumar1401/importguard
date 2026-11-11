@@ -1,200 +1,151 @@
-"""Configuration loading from .importguard.toml."""
+"""Configuration from ``[tool.importguard]`` in pyproject.toml."""
 
 from __future__ import annotations
 
+import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
-else:
-    # For Python 3.9 and 3.10, we need to handle TOML differently
-    # We'll use a simple fallback that works without external deps
-    tomllib = None
+else:  # pragma: no cover
+    import tomli as tomllib
+
+SEVERITIES = ("error", "warning", "info", "ignore")
+EFFECT_CATEGORIES = ("network", "subprocess", "file_write", "env", "thread")
+
+
+class ConfigError(Exception):
+    pass
 
 
 @dataclass
-class ModuleConfig:
-    """Configuration for a specific module."""
+class Policy:
+    """Rules applied to one entrypoint."""
 
+    forbid: list[str] = field(default_factory=list)
+    forbid_effects: list[str] = field(default_factory=lambda: ["network", "subprocess"])
+    new_packages: str = "error"
+    new_stdlib: str = "info"
+    new_first_party: str = "info"
     max_ms: float | None = None
-    banned: set[str] = field(default_factory=set)
+    strict_time: bool = False
 
 
 @dataclass
-class ImportGuardConfig:
-    """Full importguard configuration."""
+class Config:
+    root: Path
+    entrypoints: list[str]
+    lockfile: Path
+    python: str | None = None
+    pythonpath: list[str] = field(default_factory=list)
+    timeout: float = 120.0
+    defaults: Policy = field(default_factory=Policy)
+    overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    source: Path | None = None
 
-    max_total_ms: float | None = None
-    modules: dict[str, ModuleConfig] = field(default_factory=dict)
-
-    def get_module_config(self, module: str) -> ModuleConfig:
-        """Get configuration for a specific module, with inheritance."""
-        # Try exact match first
-        if module in self.modules:
-            config = self.modules[module]
-            # Apply global max if module doesn't have one
-            if config.max_ms is None and self.max_total_ms is not None:
-                config.max_ms = self.max_total_ms
-            return config
-
-        # Try parent modules
-        parts = module.split(".")
-        for i in range(len(parts) - 1, 0, -1):
-            parent = ".".join(parts[:i])
-            if parent in self.modules:
-                config = self.modules[parent]
-                if config.max_ms is None and self.max_total_ms is not None:
-                    config.max_ms = self.max_total_ms
-                return config
-
-        # Return default with global settings
-        return ModuleConfig(max_ms=self.max_total_ms)
+    def policy(self, entrypoint: str) -> Policy:
+        raw = self.overrides.get(entrypoint)
+        if not raw:
+            return self.defaults
+        merged = _policy_from(raw, base=self.defaults, where=f"entrypoint {entrypoint!r}")
+        # forbid lists accumulate: global forbids still apply
+        merged.forbid = sorted(set(self.defaults.forbid) | set(merged.forbid))
+        return merged
 
 
-def _parse_toml_simple(content: str) -> dict[str, Any]:
-    """
-    Simple TOML parser for basic configs (fallback for Python < 3.11).
-
-    This handles only the subset of TOML we need:
-    - [section] headers
-    - key = value pairs (strings, numbers, arrays)
-    """
-    result: dict[str, Any] = {}
-    current_section: list[str] | None = None
-
-    for line in content.splitlines():
-        line = line.strip()
-
-        # Skip empty lines and comments
-        if not line or line.startswith("#"):
-            continue
-
-
-        # Section header
-        if line.startswith("[") and line.endswith("]"):
-            section_name = line[1:-1].strip()
-            current_section = section_name.split(".")
-            # Create nested structure
-            current: dict[str, Any] = result
-            for part in current_section:
-                part = part.strip('"')
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-            continue
-
-        # Key = value
-        if "=" in line:
-            key, value = line.split("=", 1)
-            key = key.strip().strip('"')
-            value = value.strip()
-
-            # Parse value
-            parsed_value: Any
-            if value.startswith('"') and value.endswith('"'):
-                parsed_value = value[1:-1]
-            elif value.startswith("[") and value.endswith("]"):
-                # Simple array parsing
-                array_content = value[1:-1]
-                if array_content.strip():
-                    items: list[str] = []
-                    for item in array_content.split(","):
-                        item = item.strip().strip('"')
-                        if item:
-                            items.append(item)
-                    parsed_value = items
-                else:
-                    parsed_value = []
-            elif value.isdigit():
-                parsed_value = int(value)
-            elif value.replace(".", "").isdigit():
-                parsed_value = float(value)
-            else:
-                parsed_value = value
-
-            # Set value in nested structure
-            if current_section:
-                current = result
-                for part in current_section:
-                    part = part.strip('"')
-                    current = current[part]
-                current[key] = parsed_value
-            else:
-                result[key] = parsed_value
-
-    return result
-
-
-def load_config(path: Path) -> ImportGuardConfig:
-    """
-    Load configuration from a .importguard.toml file.
-
-    Args:
-        path: Path to the config file
-
-    Returns:
-        ImportGuardConfig object
-    """
-    content = path.read_text()
-
-    data: dict[str, Any]
-    if tomllib is not None:
-        data = tomllib.loads(content)
-    else:
-        data = _parse_toml_simple(content)
-
-    config = ImportGuardConfig()
-
-    ig_data: dict[str, Any] = data.get("importguard", {})
-
-    # Global settings
-    if "max_total_ms" in ig_data:
-        config.max_total_ms = float(ig_data["max_total_ms"])
-
-    # Per-module budgets
-    budgets = ig_data.get("budgets", {})
-    for module, max_ms in budgets.items():
-        if module not in config.modules:
-            config.modules[module] = ModuleConfig()
-        config.modules[module].max_ms = float(max_ms)
-
-    # Per-module banned imports
-    banned = ig_data.get("banned", {})
-    for module, banned_list in banned.items():
-        if module not in config.modules:
-            config.modules[module] = ModuleConfig()
-        config.modules[module].banned = set(banned_list)
-
-    return config
-
-
-def find_config(start_path: Path | None = None) -> Path | None:
-    """
-    Find .importguard.toml by walking up from start_path.
-
-    Args:
-        start_path: Starting directory (default: current directory)
-
-    Returns:
-        Path to config file if found, None otherwise
-    """
-    if start_path is None:
-        start_path = Path.cwd()
-
-    current = start_path.resolve()
-
-    while current != current.parent:
-        config_path = current / ".importguard.toml"
-        if config_path.exists():
-            return config_path
-        current = current.parent
-
-    # Check root
-    config_path = current / ".importguard.toml"
-    if config_path.exists():
-        return config_path
-
+def find_pyproject(start: Path) -> Path | None:
+    for directory in [start, *start.parents]:
+        candidate = directory / "pyproject.toml"
+        if candidate.is_file():
+            return candidate
     return None
+
+
+def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
+    cwd = (cwd or Path.cwd()).resolve()
+    pyproject = path.resolve() if path else find_pyproject(cwd)
+    data: dict[str, Any] = {}
+    if pyproject is not None:
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ConfigError(f"cannot read {pyproject}: {exc}") from exc
+    root = pyproject.parent if pyproject else cwd
+    tool = data.get("tool", {}).get("importguard", {})
+    if not isinstance(tool, dict):
+        raise ConfigError("[tool.importguard] must be a table")
+
+    known = {
+        "entrypoints",
+        "lockfile",
+        "python",
+        "pythonpath",
+        "timeout",
+        "entrypoint",
+        *Policy.__dataclass_fields__,
+    }
+    unknown = set(tool) - known
+    if unknown:
+        raise ConfigError(f"unknown [tool.importguard] keys: {', '.join(sorted(unknown))}")
+
+    entrypoints = tool.get("entrypoints") or infer_entrypoints(data, root)
+    overrides = tool.get("entrypoint", {})
+    for name in overrides:
+        if name not in entrypoints:
+            entrypoints.append(name)
+
+    return Config(
+        root=root,
+        entrypoints=list(entrypoints),
+        lockfile=root / tool.get("lockfile", "importguard.lock"),
+        python=tool.get("python"),
+        pythonpath=list(tool.get("pythonpath", [])),
+        timeout=float(tool.get("timeout", 120.0)),
+        defaults=_policy_from(tool, base=Policy(), where="[tool.importguard]"),
+        overrides=overrides,
+        source=pyproject,
+    )
+
+
+def _policy_from(raw: dict[str, Any], *, base: Policy, where: str) -> Policy:
+    policy = replace(base)
+    for key in Policy.__dataclass_fields__:
+        if key in raw:
+            setattr(policy, key, raw[key])
+    for key in ("new_packages", "new_stdlib", "new_first_party"):
+        if getattr(policy, key) not in SEVERITIES:
+            raise ConfigError(f"{where}: {key} must be one of {', '.join(SEVERITIES)}")
+    bad = set(policy.forbid_effects) - set(EFFECT_CATEGORIES)
+    if bad:
+        raise ConfigError(
+            f"{where}: unknown effect categories {sorted(bad)}; "
+            f"choose from {', '.join(EFFECT_CATEGORIES)}"
+        )
+    unknown = set(raw) - set(Policy.__dataclass_fields__)
+    if where.startswith("entrypoint") and unknown:
+        raise ConfigError(f"{where}: unknown keys {', '.join(sorted(unknown))}")
+    policy.forbid = list(policy.forbid)
+    policy.forbid_effects = list(policy.forbid_effects)
+    return policy
+
+
+def infer_entrypoints(data: dict[str, Any], root: Path) -> list[str]:
+    """Guess entrypoints: console-script modules plus the project's own package."""
+    project = data.get("project", {})
+    found: list[str] = []
+    for target in project.get("scripts", {}).values():
+        module = str(target).split(":", 1)[0].strip()
+        if module and module not in found:
+            found.append(module)
+    name = project.get("name")
+    if name:
+        pkg = re.sub(r"[-.]+", "_", name).lower()
+        for base in (root / "src", root):
+            if (base / pkg / "__init__.py").is_file() or (base / f"{pkg}.py").is_file():
+                if pkg not in found:
+                    found.insert(0, pkg)
+                break
+    return found
