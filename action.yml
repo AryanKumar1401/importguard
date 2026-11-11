@@ -1,0 +1,75 @@
+name: importguard
+description: >-
+  Gate what your Python entrypoints import at startup: new dependencies, forbidden
+  modules and import-time side effects, reported with the exact line to change.
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  args:
+    description: Extra arguments for `importguard check` (e.g. entrypoints, --strict).
+    required: false
+    default: ""
+  python:
+    description: "Interpreter to probe with (default: `python` on PATH)."
+    required: false
+    default: python
+  comment:
+    description: "Post (and keep updated) a PR comment with the report. Needs `pull-requests: write`."
+    required: false
+    default: "false"
+  github-token:
+    description: Token used to post the PR comment.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  exit-code:
+    description: "0 ok, 1 violations, 2 usage/config error, 3 tool error."
+    value: ${{ steps.check.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install importguard
+      shell: bash
+      run: '"${{ inputs.python }}" -m pip install --quiet "${{ github.action_path }}"'
+
+    - name: Check imports
+      id: check
+      shell: bash
+      env:
+        IG_ARGS: ${{ inputs.args }}
+        IG_PYTHON: ${{ inputs.python }}
+      run: |
+        set +e
+        # shellcheck disable=SC2086
+        "$IG_PYTHON" -m importguard check --python "$IG_PYTHON" --format markdown $IG_ARGS > "$RUNNER_TEMP/importguard.md"
+        code=$?
+        set -e
+        cat "$RUNNER_TEMP/importguard.md" >> "$GITHUB_STEP_SUMMARY"
+        cat "$RUNNER_TEMP/importguard.md"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Comment on pull request
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        body="$RUNNER_TEMP/importguard-comment.md"
+        { echo "<!-- importguard -->"; cat "$RUNNER_TEMP/importguard.md"; } > "$body"
+        id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq '[.[] | select(.body | startswith("<!-- importguard -->"))][0].id // empty')
+        if [ -n "$id" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" > /dev/null
+        else
+          gh api "repos/$REPO/issues/$PR/comments" -F "body=@$body" > /dev/null
+        fi
+
+    - name: Fail on violations
+      shell: bash
+      run: exit ${{ steps.check.outputs.exit-code }}
