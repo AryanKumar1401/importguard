@@ -79,6 +79,18 @@ def accept_remedy(entrypoint: str) -> Remedy:
 _SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2, "ignore": 3}
 
 
+def approval_remedy(packages: list[str]) -> Remedy:
+    label = ", ".join(f"importguard:allow:{p}" for p in packages)
+    return Remedy(
+        kind="request_approval",
+        summary=(
+            "if this is intended, a maintainer approves it outside this change: "
+            f"label the pull request `{label}` or add it to `allow` on the base branch. "
+            "Agents should not approve their own changes."
+        ),
+    )
+
+
 def _lock_diff(
     entrypoint: str,
     result: ProbeResult,
@@ -86,6 +98,9 @@ def _lock_diff(
     lock_entry: LockEntry,
     root: Path,
     forbidden_hit: set[str],
+    *,
+    mode: str = "lock",
+    allowed: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """New modules, grouped by the hop where each new subgraph enters startup.
 
@@ -96,7 +111,11 @@ def _lock_diff(
     """
     findings: list[Finding] = []
     version_note = None
-    if lock_entry.python and lock_entry.python != ".".join(result.python.split(".")[:2]):
+    if (
+        mode == "lock"
+        and lock_entry.python
+        and lock_entry.python != ".".join(result.python.split(".")[:2])
+    ):
         version_note = f"lock was made with Python {lock_entry.python}, now {result.python}"
 
     def is_new(m: Module) -> bool:
@@ -141,6 +160,9 @@ def _lock_diff(
             continue
         if kind == "new_package" and set(pkgs["third_party"]) <= forbidden_hit:
             continue  # already reported as forbidden
+        approved = kind == "new_package" and ("*" in allowed or set(pkgs["third_party"]) <= allowed)
+        if approved:
+            severity = "info"
         extras = []
         public_std = [p for p in pkgs["stdlib"] if not p.startswith("_")]
         if kind == "new_package" and public_std:
@@ -154,15 +176,22 @@ def _lock_diff(
         chain = result.chain(m.name)
         ms = m.cumulative_us / 1000.0
         message = f"{label} at startup: {headline} (+{len(group)} modules, ~{ms:.0f}ms)"
+        if approved:
+            message = "approved: " + message
         if extras:
             message += "; also pulls in " + "; ".join(extras)
         remedies = [r for r in [defer_remedy(result, chain, root)] if r]
-        remedies.append(accept_remedy(entrypoint))
+        if mode == "diff":
+            if kind == "new_package" and not approved:
+                remedies.append(approval_remedy(pkgs["third_party"]))
+        else:
+            remedies.append(accept_remedy(entrypoint))
         data: dict[str, object] = {
             "entry_module": m.name,
             "modules_added": len(group),
             "est_ms": round(ms, 1),
             "packages": pkgs,
+            "approved": approved,
         }
         if version_note:
             data["note"] = version_note
@@ -191,7 +220,9 @@ def _lock_diff(
                 entrypoint=entrypoint,
                 message=f"no longer imported at startup: {', '.join(gone)}",
                 data={"packages": gone},
-                remedies=[
+                remedies=[]
+                if mode == "diff"
+                else [
                     Remedy(
                         kind="accept",
                         summary="tighten the lockfile so they cannot silently come back",
@@ -212,6 +243,8 @@ def check_result(
     root: Path,
     *,
     lock_exists: bool,
+    mode: str = "lock",
+    allowed: frozenset[str] = frozenset(),
 ) -> tuple[EntrypointSummary, list[Finding]]:
     findings: list[Finding] = []
     summary = EntrypointSummary(
@@ -268,7 +301,18 @@ def check_result(
 
     # Lockfile diff, grouped by where new code enters the import graph.
     if lock_entry is not None and result.ok:
-        findings.extend(_lock_diff(entrypoint, result, policy, lock_entry, root, forbidden_hit))
+        findings.extend(
+            _lock_diff(
+                entrypoint,
+                result,
+                policy,
+                lock_entry,
+                root,
+                forbidden_hit,
+                mode=mode,
+                allowed=allowed | frozenset(policy.allow),
+            )
+        )
     elif lock_entry is None and lock_exists and result.ok:
         findings.append(
             Finding(

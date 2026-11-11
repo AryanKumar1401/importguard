@@ -13,6 +13,7 @@ from pathlib import Path
 from . import __version__
 from .checks import check_result
 from .config import Config, ConfigError, load_config
+from .diffmode import allow_from_env, run_diff
 from .findings import (
     EXIT_TOOL_ERROR,
     EXIT_USAGE,
@@ -80,6 +81,31 @@ def build_parser() -> argparse.ArgumentParser:
         "(no files: ask git for uncommitted changes)",
     )
     p.add_argument("--base", help="with --changed: also include changes since this git ref")
+    p.add_argument("--strict", action="store_true", help="exit non-zero on warnings too")
+
+    p = sub.add_parser(
+        "diff",
+        parents=[common],
+        help="report what this change adds to startup vs. its base commit (no setup needed)",
+    )
+    p.add_argument("entrypoints", nargs="*", help="entrypoints to compare (default: all)")
+    p.add_argument(
+        "--base",
+        help="base ref; the merge-base with HEAD is used (default: origin/HEAD, main, master)",
+    )
+    p.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="PKG",
+        help="approve a new third-party package ('*' approves all); also $IMPORTGUARD_ALLOW",
+    )
+    p.add_argument(
+        "--policy-from",
+        choices=["base", "head"],
+        default="base",
+        help="read [tool.importguard] from the base commit (default) or the working tree",
+    )
     p.add_argument("--strict", action="store_true", help="exit non-zero on warnings too")
 
     p = sub.add_parser("why", parents=[common], help="show the import chain to a module")
@@ -235,6 +261,17 @@ def cmd_check(args: argparse.Namespace, config: Config, python: str | None) -> R
     return report
 
 
+def cmd_diff(args: argparse.Namespace, config: Config, python: str | None) -> Report:
+    return run_diff(
+        config,
+        entrypoints=list(args.entrypoints),
+        base_ref=args.base,
+        allow=list(args.allow) + allow_from_env(),
+        policy_from=args.policy_from,
+        python=python,
+    )
+
+
 def cmd_why(args: argparse.Namespace, config: Config, python: str | None) -> Report:
     result = run_probe(
         args.entrypoint,
@@ -380,6 +417,7 @@ def cmd_verify_lazy(args: argparse.Namespace, config: Config, python: str | None
 COMMANDS = {
     "snapshot": cmd_snapshot,
     "check": cmd_check,
+    "diff": cmd_diff,
     "why": cmd_why,
     "show": cmd_show,
     "effects": cmd_effects,

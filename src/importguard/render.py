@@ -71,6 +71,11 @@ def render_text(report: Report, *, quiet: bool = False) -> str:
     title = f"importguard {report.command}"
     if report.python:
         title += f" {s.dot} Python {report.python}"
+    base = report.data.get("base") if report.command == "diff" else None
+    if base:
+        title += f" {s.dot} vs {base['sha'][:10]} ({base['ref']})"
+        if report.data.get("policy_source"):
+            title += f" {s.dot} policy from {report.data['policy_source']}"
     if report.tool_error:
         return f"{s.c('importguard: error', '31;1')}: {report.tool_error}\n"
     if not quiet:
@@ -87,7 +92,8 @@ def render_text(report: Report, *, quiet: bool = False) -> str:
                 out.append(f"{s.skip} {e.name:<{width}}  skipped ({e.note})")
                 continue
             mark = s.c(s.ok, "32") if e.status == "pass" else s.c(s.bad, "31")
-            locked = f" (locked {e.locked_modules})" if e.locked_modules is not None else ""
+            word = "base" if report.command == "diff" else "locked"
+            locked = f" ({word} {e.locked_modules})" if e.locked_modules is not None else ""
             out.append(
                 f"{mark} {e.name:<{width}}  {e.modules} modules{locked} {s.dot} {e.total_ms:.0f}ms"
             )
@@ -202,19 +208,29 @@ def render_markdown(report: Report) -> str:
         return f"### importguard\n\n:x: {report.tool_error}\n"
     status = ":white_check_mark:" if report.ok else ":x:"
     out = [f"### {status} importguard {report.command}", ""]
+    base = report.data.get("base") if report.command == "diff" else None
+    if base:
+        out += [f"Compared with `{base['sha'][:10]}` ({base['ref']}).", ""]
     if report.entrypoints:
         out += ["| entrypoint | status | modules | time |", "|---|---|---|---|"]
         for e in report.entrypoints:
-            locked = f" (locked {e.locked_modules})" if e.locked_modules is not None else ""
+            word = "base" if report.command == "diff" else "locked"
+            locked = f" ({word} {e.locked_modules})" if e.locked_modules is not None else ""
             mods = "" if e.status == "skipped" else f"{e.modules}{locked}"
             ms = "" if e.status == "skipped" else f"{e.total_ms:.0f}ms"
             out.append(f"| `{e.name}` | {e.status} | {mods} | {ms} |")
         out.append("")
     icons = {"error": ":x:", "warning": ":warning:", "info": ":information_source:"}
     for f in report.findings:
-        if f.severity == "info" and f.kind not in ("lazy_safe", "lazy_unexercised"):
+        approved = bool(f.data.get("approved"))
+        if (
+            f.severity == "info"
+            and not approved
+            and f.kind not in ("lazy_safe", "lazy_unexercised")
+        ):
             continue
-        out.append(f"{icons.get(f.severity, '')} **{f.entrypoint}**: {f.message}")
+        icon = ":white_check_mark:" if approved else icons.get(f.severity, "")
+        out.append(f"{icon} **{f.entrypoint}**: {f.message}")
         hops = [st for st in f.chain if st.file]
         if hops:
             out.append("")

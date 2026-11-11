@@ -26,6 +26,7 @@ class Policy:
     """Rules applied to one entrypoint."""
 
     forbid: list[str] = field(default_factory=list)
+    allow: list[str] = field(default_factory=list)  # approved third-party packages
     forbid_effects: list[str] = field(default_factory=lambda: ["network", "subprocess"])
     new_packages: str = "error"
     new_stdlib: str = "info"
@@ -45,14 +46,16 @@ class Config:
     defaults: Policy = field(default_factory=Policy)
     overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     source: Path | None = None
+    raw: dict[str, Any] = field(default_factory=dict)  # the [tool.importguard] table
 
     def policy(self, entrypoint: str) -> Policy:
         raw = self.overrides.get(entrypoint)
         if not raw:
             return self.defaults
         merged = _policy_from(raw, base=self.defaults, where=f"entrypoint {entrypoint!r}")
-        # forbid lists accumulate: global forbids still apply
+        # forbid/allow lists accumulate: global entries still apply
         merged.forbid = sorted(set(self.defaults.forbid) | set(merged.forbid))
+        merged.allow = sorted(set(self.defaults.allow) | set(merged.allow))
         return merged
 
 
@@ -107,6 +110,7 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
         defaults=_policy_from(tool, base=Policy(), where="[tool.importguard]"),
         overrides=overrides,
         source=pyproject,
+        raw=tool,
     )
 
 
@@ -128,6 +132,7 @@ def _policy_from(raw: dict[str, Any], *, base: Policy, where: str) -> Policy:
     if where.startswith("entrypoint") and unknown:
         raise ConfigError(f"{where}: unknown keys {', '.join(sorted(unknown))}")
     policy.forbid = list(policy.forbid)
+    policy.allow = list(policy.allow)
     policy.forbid_effects = list(policy.forbid_effects)
     return policy
 

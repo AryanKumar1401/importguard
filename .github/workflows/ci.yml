@@ -19,16 +19,24 @@ jobs:
       - run: ruff format --check src/ tests/
       - run: mypy
 
-  # importguard gates its own startup (lock generated on 3.13).
+  # importguard gates its own startup: what this change adds (diff), and the
+  # committed lockfile (check; generated on 3.13).
   self-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - uses: ./
         with:
+          mode: diff
+          args: --strict
+      - uses: ./
+        with:
+          mode: check
           args: --strict
 
   test:
