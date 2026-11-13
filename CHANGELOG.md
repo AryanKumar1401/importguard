@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-11-13
 
 A redesign around one job: a pull-request report of what a change adds to your
 program's startup, and why. Verdicts depend on which modules load, not on
@@ -33,7 +33,7 @@ millisecond thresholds. Nothing from 0.1 is kept.
   - new-package findings offer a `request_approval` remedy instead of a command the agent could run to approve itself.
 - `allow` policy key (approved third-party packages).
 - The GitHub Action runs `diff` by default (`mode: check` for lockfile mode).
-- **Comments on pull requests from forks.** Their token is read-only, so the Action uploads the report instead. A new `comment` sub-action (`AryanKumar1401/importguard/comment@main`), run from a `workflow_run` workflow, posts it without ever running the PR's code. The uploaded report is treated as untrusted: it is only posted to the PR whose head is the commit that was tested, the body is size-capped, and @mentions are defused.
+- **Comments on pull requests from forks.** Their token is read-only, so the Action uploads the report instead. A new `comment` sub-action (`AryanKumar1401/importguard/comment@v0.2.0`), run from a `workflow_run` workflow, posts it without ever running the PR's code. The uploaded report is treated as untrusted: it is only posted to the PR whose head is the commit that was tested, the body is size-capped, and @mentions are defused.
 - **Probe engine**: imports each entrypoint in a fresh interpreter and records:
   - every module loaded, with the importing module, file and line (`sys.meta_path` observer);
   - side effects during import (network, subprocess, file writes, environment, threads) via audit hooks, attributed to the module whose top-level code ran them.
@@ -72,6 +72,9 @@ millisecond thresholds. Nothing from 0.1 is kept.
 ### Removed
 - `--max-ms`, `--ban`, `--repeat`, `.importguard.toml` and the 0.1 Python API.
 
-## [0.1.0] - 2025-01-01
+## [0.1.0] - 2025-12-31
 
 - Initial release: `importguard check <module>` with time budgets and banned imports.
+
+[0.2.0]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.2.0
+[0.1.0]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.1.0
