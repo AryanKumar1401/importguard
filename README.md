@@ -2,6 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/importguardpy)](https://pypi.org/project/importguardpy/)
 [![Python](https://img.shields.io/pypi/pyversions/importguardpy)](https://pypi.org/project/importguardpy/)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-importguard-blue?logo=github)](https://github.com/marketplace/actions/importguard)
 [![CI](https://github.com/AryanKumar1401/importguard/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanKumar1401/importguard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
