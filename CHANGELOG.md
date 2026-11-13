@@ -36,6 +36,32 @@ verdicts no longer depend on millisecond thresholds. Nothing from 0.1 is kept.
 - Composite GitHub Action (`action.yml`) with job summary and an updatable PR comment.
 - Agent integration guide (`docs/agents.md`) with a Claude Code Stop hook.
 
+### Fixed (adversarial review)
+- `diff`: the interpreter, `pythonpath` and timeout now come from the base commit (or the CLI), never the change's own config; with no base policy the defaults apply.
+- `diff`: an entrypoint the base cannot import is compared with what the base's other entrypoints load, or fails closed, instead of skipping the new-package gate.
+- Probe:
+  - project code that runs at interpreter startup (`sitecustomize`, `.pth`) is reported as `preloaded_code`;
+  - modules deleted from `sys.modules` after import, spoofed `__name__` and parent cycles no longer hide new packages;
+  - a module first looked up with `importlib.util.find_spec` is attributed to the import that actually loaded it;
+  - namespace packages (`google.*`) are compared per distribution;
+  - git-ignored or `.dist-info`-adjacent code inside the project counts as third-party;
+  - DNS lookups and sqlite file creation are detected; threads started at import get a short window;
+  - `PYTHONPYCACHEPREFIX` writes are ignored.
+- New modules are grouped per import statement; stdlib internals and unattributed modules no longer produce one finding each.
+- `check --changed`: explicit paths are resolved against the project root, and new files that could shadow or extend a startup module trigger a full re-check.
+- `verify-lazy`:
+  - "verified" now requires the tests to use the lazily imported name;
+  - the project's own `lazy` imports and `__lazy_modules__` stay lazy;
+  - `python -m` runs are keyed by module name;
+  - interacting failures blame only the interacting imports;
+  - replacements come from the AST, never making unrelated imports lazy;
+  - finding ids include the fromlist;
+  - timeouts kill the whole process group;
+  - `--max-candidates` must be positive.
+- Unexpected crashes exit 3 (tool error), not 1; output no longer fails on non-UTF-8 terminals; `--format markdown` works for every command.
+- GitHub Action: only updates its own PR comment and never fails the job because commenting failed. Docs: the workflow re-runs on `labeled`, and the agent hook blocks only on violations.
+- README: corrected the importcost comparison, and stated the threat model instead of claiming the check cannot be gamed.
+
 ### Changed
 - Requires Python 3.10+ (`tomli` on 3.10). Configuration moved to `pyproject.toml`.
 - Time budgets (`max_ms`) are advisory warnings unless `strict_time = true`.

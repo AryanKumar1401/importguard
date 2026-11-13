@@ -125,6 +125,25 @@ def affected_entrypoints(
             return entrypoints, f"{c} changed"
         if name.endswith(".pth") or name in ("sitecustomize.py", "usercustomize.py"):
             return entrypoints, f"{c} changed"
+    # A .py file outside every locked graph can still change startup if it adds
+    # to or shadows a module that is loaded: a new submodule of a startup package
+    # (picked up by a try/except import), a package dir shadowing a module, or a
+    # top-level file shadowing a dependency or stdlib module.
+    known_files = {f for e in lock.entrypoints.values() for f in e.first_party.values()}
+    loaded_tops: set[str] = set()
+    for e in lock.entrypoints.values():
+        loaded_tops.update(m.partition(".")[0] for m in e.first_party)
+        loaded_tops.update(p.partition(".")[0] for p in e.third_party)
+        loaded_tops.update(p.partition(".")[0] for p in e.stdlib)
+    for c in norm:
+        if not c.endswith(".py") or c in known_files:
+            continue
+        parts = c.split("/")
+        if parts[0] == "src" and len(parts) > 1:
+            parts = parts[1:]
+        top = parts[0].removesuffix(".py")
+        if top in loaded_tops:
+            return entrypoints, f"{c} may add to or shadow {top!r}"
     selected = []
     for ep in entrypoints:
         entry = lock.entrypoints.get(ep)

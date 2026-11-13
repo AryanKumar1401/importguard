@@ -32,10 +32,14 @@ class Module:
     origin: str | None
     self_us: int = 0
     cumulative_us: int = 0
+    # Distribution-level name: the shortest dotted prefix that is not a namespace
+    # package, so google.cloud and google.protobuf are different packages.
+    package: str = ""
+    namespace: bool = False  # a namespace package: a directory, not a distribution
 
-    @property
-    def package(self) -> str:
-        return self.name.partition(".")[0]
+    def __post_init__(self) -> None:
+        if not self.package:
+            self.package = self.name.partition(".")[0]
 
 
 @dataclass
@@ -79,6 +83,9 @@ class ProbeResult:
     effects: list[Effect]
     error: ImportError_ | None
     attempted: list[str] = field(default_factory=list)
+    # Non-stdlib modules already imported when the interpreter started
+    # (sitecustomize, usercustomize, .pth files); code the probe cannot observe.
+    startup: list[Module] = field(default_factory=list)
     statements: list[Statement] = field(default_factory=list)
     lazy_hits: list[str] = field(default_factory=list)
     total_us: int = 0
@@ -95,7 +102,7 @@ class ProbeResult:
         return {m.name: m for m in self.modules}
 
     def packages(self, kind: str) -> set[str]:
-        return {m.package for m in self.modules if m.kind == kind}
+        return {m.package for m in self.modules if m.kind == kind and not m.namespace}
 
     def chain(self, name: str) -> list[Module]:
         """Import chain from the target down to ``name`` (inclusive)."""
@@ -137,17 +144,73 @@ class ProbeResult:
         return out
 
 
+def _installed_dist_dir(path: Path, root: Path) -> bool:
+    """True if ``path`` sits in a directory that holds installed distributions.
+
+    Covers pip --target dirs, __pypackages__ and vendored installs inside the
+    project root: any ancestor directory (below root) with a *.dist-info entry.
+    """
+    for parent in path.parents:
+        if parent == root or root not in parent.parents:
+            break
+        try:
+            if any(e.name.endswith(".dist-info") for e in parent.iterdir()):
+                return True
+        except OSError:
+            return False
+    return False
+
+
 def classify(name: str, origin: str | None, stdlib: bool, root: Path) -> str:
     if stdlib:
         return "stdlib"
     if origin and origin not in ("built-in", "frozen"):
         try:
-            rel = Path(origin).resolve().relative_to(root)
+            path = Path(origin).resolve()
+            rel = path.relative_to(root)
         except (ValueError, OSError):
             return "third_party"
-        if not _THIRD_PARTY_MARKERS.intersection(rel.parts):
+        if not _THIRD_PARTY_MARKERS.intersection(rel.parts) and not _installed_dist_dir(path, root):
             return "first_party"
     return "third_party"
+
+
+def _top_level_path(name: str, origin: str) -> Path:
+    path = Path(origin)
+    if path.name == "__init__.py":
+        path = path.parent
+    for _ in range(name.count(".")):
+        path = path.parent
+    return path
+
+
+def _reclassify_ignored(modules: list[Module], root: Path) -> None:
+    """Code inside the project whose top-level package git ignores is vendored
+    or installed there (__pypackages__, pip --target), not first-party."""
+    tops: dict[str, list[Module]] = {}
+    for m in modules:
+        if m.kind == "first_party" and m.origin:
+            try:
+                rel = _top_level_path(m.name, m.origin).resolve().relative_to(root)
+            except (ValueError, OSError):
+                continue
+            tops.setdefault(rel.as_posix(), []).append(m)
+    if not tops:
+        return
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            cwd=root,
+            input="\n".join(tops) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    for ignored in proc.stdout.splitlines():
+        for m in tops.get(ignored.strip(), []):
+            m.kind = "third_party"
 
 
 def relpath(path: str | None, root: Path) -> str | None:
@@ -229,14 +292,34 @@ def run_probe(
 
 
 def _build_result(data: dict, stderr: str, root: Path) -> ProbeResult:  # type: ignore[type-arg]
+    # Only importtime lines between the probe's markers belong to the target.
     times: dict[str, tuple[int, int]] = {}
+    inside = "__importguard_begin__" not in stderr  # old probes: whole stream
     for line in stderr.splitlines():
+        if line == "__importguard_begin__":
+            inside = True
+            continue
+        if line == "__importguard_end__":
+            inside = False
+            continue
         m = _IMPORTTIME.match(line)
-        if m and m.group(3) not in times:
+        if inside and m and m.group(3) not in times:
             times[m.group(3)] = (int(m.group(1)), int(m.group(2)))
 
+    raws = list(data["modules"])
+    kept = [r for r in raws if r.get("present", True)]
+    attempted = [r["name"] for r in raws if not r.get("present", True)]
+    namespaces = {r["name"] for r in kept if r.get("namespace")}
+
+    def package_of(name: str) -> str:
+        parts = name.split(".")
+        i = 1
+        while i < len(parts) and ".".join(parts[:i]) in namespaces:
+            i += 1
+        return ".".join(parts[:i])
+
     modules: list[Module] = []
-    for raw in data["modules"]:
+    for raw in kept:
         self_us, cum_us = times.get(raw["name"], (0, 0))
         if raw["parent"] == "__main__":  # imported by the probe itself
             raw["parent"] = raw["file"] = raw["line"] = None
@@ -250,8 +333,22 @@ def _build_result(data: dict, stderr: str, root: Path) -> ProbeResult:  # type: 
                 origin=raw["origin"],
                 self_us=self_us,
                 cumulative_us=cum_us,
+                package=package_of(raw["name"]),
+                namespace=bool(raw.get("namespace")),
             )
         )
+    _reclassify_ignored(modules, root)
+    startup = [
+        Module(
+            name=r["name"],
+            kind=classify(r["name"], r["origin"], False, root),
+            parent=None,
+            file=None,
+            line=None,
+            origin=r["origin"],
+        )
+        for r in data.get("startup", [])
+    ]
     target = data["target"]
     loaded = {m.name for m in modules}
     parts = target.split(".")
@@ -275,7 +372,8 @@ def _build_result(data: dict, stderr: str, root: Path) -> ProbeResult:  # type: 
             for e in data["effects"]
         ],
         error=ImportError_(err["type"], err["message"], err["traceback"]) if err else None,
-        attempted=data.get("attempted", []),
+        attempted=attempted,
+        startup=startup,
         statements=[
             Statement(
                 importer=s["importer"],

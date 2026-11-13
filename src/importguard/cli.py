@@ -32,6 +32,16 @@ Use --format json (or IMPORTGUARD_FORMAT=json) for machine-readable output;
 `importguard schema` prints its JSON Schema."""
 
 
+def _positive_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    return n
+
+
 def _common() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
@@ -136,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CMD",
         help="test command run under a 3.15+ interpreter, e.g. 'python3.15 -m pytest -x -q'",
     )
-    p.add_argument("--max-candidates", type=int, default=40)
+    p.add_argument("--max-candidates", type=_positive_int, default=40)
     p.add_argument("--test-timeout", type=float, default=900.0, help="seconds per test run")
 
     sub.add_parser("schema", help="print the JSON Schema of --format json output")
@@ -167,6 +177,15 @@ def _select(config: Config, requested: Sequence[str]) -> list[str]:
             "`entrypoints = [...]` under [tool.importguard] in pyproject.toml"
         )
     return entrypoints
+
+
+def _project_path(path: str, root: Path) -> str:
+    """A changed-file argument as a path relative to the project root."""
+    resolved = (Path.cwd() / path).resolve()
+    try:
+        return resolved.relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ConfigError(f"--changed: {path} is outside the project root {root}") from exc
 
 
 def git_changed(root: Path, base: str | None) -> list[str]:
@@ -229,7 +248,11 @@ def cmd_check(args: argparse.Namespace, config: Config, python: str | None) -> R
     targets = _select(config, args.entrypoints)
     selected, reason = targets, None
     if args.changed is not None:
-        changed = args.changed or git_changed(config.root, args.base)
+        changed = (
+            [_project_path(p, config.root) for p in args.changed]
+            if args.changed
+            else git_changed(config.root, args.base)
+        )
         selected, reason = affected_entrypoints(lock, targets, changed)
         report.data["changed_files"] = changed
     for ep in targets:
@@ -408,6 +431,7 @@ def cmd_verify_lazy(args: argparse.Namespace, config: Config, python: str | None
             else None
         ),
         "candidates": len(outcome.candidates),
+        "tested": bool(args.test),
         "test_runs": outcome.test_runs,
         "notes": outcome.notes,
     }
@@ -426,6 +450,12 @@ COMMANDS = {
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:  # never crash on a terminal that cannot encode a module path or message
+            reconfigure(errors="replace")
+        except (ValueError, OSError):
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "schema":
@@ -433,7 +463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     try:
         config = load_config(args.config)
-        python = args.python or config.python
+        # diff takes the interpreter from the CLI or the base commit, never the head.
+        python = args.python if args.command == "diff" else (args.python or config.python)
         report = COMMANDS[args.command](args, config, python)
     except (ConfigError, LockError) as exc:
         emit(Report(command=args.command, tool_error=str(exc)), args)
@@ -441,7 +472,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ProbeError, LazyError) as exc:
         emit(Report(command=args.command, tool_error=str(exc)), args)
         return EXIT_TOOL_ERROR
-    emit(report, args)
+    except Exception as exc:  # a bug in importguard must not read as "violations" (1)
+        emit(
+            Report(
+                command=args.command,
+                tool_error=f"internal error: {type(exc).__name__}: {exc} (please report this)",
+            ),
+            args,
+        )
+        return EXIT_TOOL_ERROR
+    try:
+        emit(report, args)
+    except Exception as exc:  # pragma: no cover - rendering bug
+        sys.stderr.write(f"importguard: internal error while rendering: {exc!r}\n")
+        return EXIT_TOOL_ERROR
     return report.exit_code(strict=getattr(args, "strict", False))
 
 

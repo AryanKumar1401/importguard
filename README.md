@@ -46,11 +46,14 @@ Each finding is one place where new code enters the import graph. It shows the f
 When agents write most of the code, any baseline stored in the change can be moved by the change. An agent that hits a red check can regenerate a snapshot, add an ignore entry or loosen a config to turn it green. `diff` closes that route:
 
 - **The baseline is the merge-base commit.** It is checked out into a temporary git worktree and probed with the same interpreter. Nothing is stored in the repository, so there is nothing to regenerate.
-- **The policy comes from the base too.** `forbid`, `allow` and severities are read from the base commit's `pyproject.toml`. A change that loosens them still fails, gets a `policy_changed` warning, and takes effect only after a human reviews and merges it.
+- **The policy comes from the base too.** `forbid`, `allow`, severities, and the `python`, `pythonpath` and `timeout` used to run the probe are all read from the base commit's `pyproject.toml`. If the base has no `[tool.importguard]`, the defaults apply, never the change's own config. A change that loosens them still fails, gets a `policy_changed` finding, and takes effect only after a human reviews and merges it.
+- **An entrypoint the base cannot import** (new in the change, or broken by the environment) is compared with what the base's other entrypoints load. With nothing importable on the base, everything counts as new: the check fails closed.
 - **Entrypoints are the union of base and head**, so deleting one from the config doesn't hide it.
 - **Approval happens outside the diff.** It comes from a pull-request label applied by a maintainer (`importguard:allow:<package>`, or `importguard:approved` for all), from `--allow` / `IMPORTGUARD_ALLOW` in CI, or from `allow` on the base branch. The fix offered for a new package never includes a command the agent can run to approve itself.
 
 The reviewer is left with one question per finding: "this PR adds `bigdep` to CLI startup through `report.py:5`. Intended?"
+
+What this does and does not protect against: it stops a change from moving the baseline, the rules or the approval that judge it, and from hiding imports through startup hooks (`sitecustomize`, `.pth`) or by deleting modules from `sys.modules`. The probe runs inside the interpreter it measures, so code written specifically to deceive it (rewriting the probe's state, faking its output) can still succeed. Such code is conspicuous in review; importguard is a check against accidental regressions and casual workarounds, not a sandbox.
 
 ### Lockfile mode
 
@@ -88,8 +91,10 @@ How it works:
 4. If the tests fail, it bisects down to the imports that break them.
 
 Each candidate is labelled:
-- **verified**: tests passed with the import lazy, and they actually imported that module.
-- **unexercised**: your tests never imported that module, or no `--test` command was given.
+- **verified**: tests passed with the import lazy, and they actually used the lazily imported name (it was loaded on first use during the tests).
+- **unexercised**: not proven either way. The finding says why: the tests never imported the importing module, imported it but never used the name, did not converge, or no `--test` command was given.
+
+Imports your code already marks `lazy`, or lists in `__lazy_modules__`, keep that behaviour in every run, including the eager baseline.
 - **unsafe**: making it lazy breaks the tests. The finding includes the failing test.
 
 ---
@@ -155,7 +160,7 @@ importguard is designed to be called by agents as well as people:
   - typed `remedies`: `defer_import`, `make_lazy`, `keep_eager`, `accept`, ..., with `file`, `line`, the current `source` line and a suggested `replacement`.
 - **Deterministic verdicts:** an agent loop won't chase timing noise.
 - **Zero setup:** `importguard diff` works in any git checkout, so an agent can run it in a repository that has never heard of importguard (`uvx --from importguardpy importguard diff --json`, once 0.2 is released on PyPI).
-- **A check the agent cannot game:** in diff mode the baseline and policy come from the base commit, and approval needs a human (see above). The agent's only way to green is to fix the import.
+- **A check the change cannot reconfigure:** in diff mode the baseline, policy and interpreter come from the base commit, and approval needs a human (see above). Editing the lockfile or config does not turn it green; fixing the import does. (See the threat model above for what it does not cover.)
 - **Cheap incremental checks:** `check --changed` re-probes only the entrypoints the edit can affect.
 
 See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code hook that runs `importguard diff` before an agent finishes its turn.
@@ -164,7 +169,10 @@ See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Cod
 
 ```yaml
 # .github/workflows/importguard.yml
-on: pull_request
+on:
+  pull_request:
+    # labeled/unlabeled re-run the check when a maintainer adds an approval label
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 permissions:
   contents: read
   pull-requests: write   # only for comment: true
@@ -208,6 +216,8 @@ With pre-commit:
 
 Bytecode-cache writes are ignored. On 3.15 the probe can also run with `sys.set_lazy_imports("all")` and a filter, either to list lazy-eligible statements or to make a chosen set of them lazy. `verify-lazy` puts the same filter into your test process through a temporary `sitecustomize` that chains to any existing one.
 
+The probe also flags project code that runs at interpreter startup (`sitecustomize`, `usercustomize`, `.pth` files), since that executes before it can observe anything, and cross-checks which modules really loaded, so deleting a module from `sys.modules` does not hide it. Code inside the project whose top-level package is git-ignored or sits next to a `*.dist-info` directory (`__pypackages__`, `pip install --target`) counts as third-party. Namespace packages are compared by distribution (`google.cloud.bigquery`, not `google`).
+
 The probe executes your code. Treat untrusted repositories as you would when running their tests: in a sandbox.
 
 ## How it fits with other tools
@@ -215,7 +225,7 @@ The probe executes your code. Treat untrusted repositories as you would when run
 | tool | relationship |
 |---|---|
 | Ruff (`TID251`/`TID253`, lazy-import rules), flake8-lazy | Static checks of your own source. Use them alongside importguard. importguard sees transitive imports through dependencies and checks laziness against runtime behaviour. |
-| [importcost](https://pypi.org/project/importcost/) | Millisecond and module-count budgets. importguard gates on *which* packages load and explains *why*. |
+| [importcost](https://pypi.org/project/importcost/) | The closest tool. It measures import cost, has an `audit` that classifies imports as safe or unsafe to make lazy by running your tests, an `apply` that rewrites them, and an `import.lock`. importguard's differences: the import chain with the first-party line for every new package, import-time side-effect detection, and `diff` against the base commit with policy and approval outside the change. |
 | tuna, importtime-waterfall | Visualise one `-X importtime` run. Use `importguard show`/`why` for the same questions in CI or from an agent. |
 | import-linter | Architecture contracts between your own packages, checked statically. |
 

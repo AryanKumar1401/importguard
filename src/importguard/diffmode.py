@@ -194,24 +194,25 @@ def run_diff(
         if changed is not None:
             report.findings.append(changed)
 
-        deltas: dict[str, dict[str, object]] = {}
+        # Runtime settings come from the same place as the policy: a change must not
+        # be able to pick the interpreter or search path that judges it.
+        runtime = policy_cfg
+        interpreter = python or runtime.python
+
+        def probe(ep: str, root: Path) -> ProbeResult:
+            return run_probe(
+                ep,
+                root=root,
+                python=interpreter,
+                pythonpath=runtime.pythonpath,
+                timeout=runtime.timeout,
+            )
+
+        heads = {ep: probe(ep, config.root) for ep in targets}
+        bases: dict[str, ProbeResult] = {}
+        shadowed: dict[str, str] = {}
         for ep in targets:
-            policy = policy_cfg.policy(ep)
-            head = run_probe(
-                ep,
-                root=config.root,
-                python=python,
-                pythonpath=config.pythonpath,
-                timeout=config.timeout,
-            )
-            base_res = run_probe(
-                ep,
-                root=base_root,
-                python=python,
-                pythonpath=(base_cfg or config).pythonpath,
-                timeout=config.timeout,
-            )
-            report.python = head.python
+            base_res = probe(ep, base_root)
             shadow = _shadowed(ep, base_res, base_root)
             if shadow and not _exists_in(shadow, config.root, base_root):
                 # The entrypoint is new in this change; the base probe fell through
@@ -221,20 +222,35 @@ def run_diff(
                 )
                 shadow = None
             if shadow:
+                shadowed[ep] = shadow
+            bases[ep] = base_res
+        # For an entrypoint the base cannot import (new in this change, or broken by
+        # the environment), compare against everything the base's other entrypoints
+        # load. With nothing importable on base, everything counts as new: fail closed.
+        fallback = _union_entry(
+            [LockEntry.from_probe(b, base_root) for b in bases.values() if b.ok]
+        )
+
+        deltas: dict[str, dict[str, object]] = {}
+        for ep in targets:
+            head, base_res = heads[ep], bases[ep]
+            report.python = head.python
+            if ep in shadowed:
                 report.entrypoints.append(
                     EntrypointSummary(
                         name=ep,
                         status="error",
                         note=(
-                            f"base probe loaded {ep} from {shadow}, not from the base checkout "
-                            "(an installed copy shadows it); set `pythonpath` under "
+                            f"base probe loaded {ep} from {shadowed[ep]}, not from the base "
+                            "checkout (an installed copy shadows it); set `pythonpath` under "
                             "[tool.importguard] or install the project in editable mode"
                         ),
                     )
                 )
                 report.tool_error = report.tool_error or f"cannot compare {ep}: base is shadowed"
                 continue
-            base_entry = LockEntry.from_probe(base_res, base_root) if base_res.ok else None
+            policy = policy_cfg.policy(ep)
+            base_entry = LockEntry.from_probe(base_res, base_root) if base_res.ok else fallback
             summary, findings = check_result(
                 ep,
                 head,
@@ -249,9 +265,12 @@ def run_diff(
                 findings = _only_new(findings, base_res, policy.max_ms)
                 summary.locked_modules = len(base_res.modules)
             elif head.ok:
+                why = base_res.error.type if base_res.error else "?"
                 summary.note = (
-                    f"not importable on base ({base_res.error.type if base_res.error else '?'}); "
-                    "showing forbidden imports and side effects only"
+                    f"not importable on base ({why}); compared with what the base's other "
+                    "entrypoints load"
+                    if fallback.modules
+                    else f"not importable on base ({why}); everything it loads counts as new"
                 )
             else:
                 findings = []
@@ -274,6 +293,23 @@ def run_diff(
             }
         report.data["entrypoints"] = deltas
     return report
+
+
+def _union_entry(entries: list[LockEntry]) -> LockEntry:
+    third: set[str] = set()
+    std: set[str] = set()
+    first: dict[str, str] = {}
+    for e in entries:
+        third.update(e.third_party)
+        std.update(e.stdlib)
+        first.update(e.first_party)
+    return LockEntry(
+        python=entries[0].python if entries else "",
+        modules=sum(e.modules for e in entries),
+        third_party=sorted(third),
+        stdlib=sorted(std),
+        first_party=first,
+    )
 
 
 def _shadowed(entrypoint: str, base: ProbeResult, base_root: Path) -> str | None:

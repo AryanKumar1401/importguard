@@ -36,6 +36,10 @@ inputs:
     description: Token used to post the PR comment.
     required: false
     default: ${{ github.token }}
+  comment-author:
+    description: "Login that owns the importguard comment (the token's user). Only that user's comment is updated."
+    required: false
+    default: github-actions[bot]
 
 outputs:
   exit-code:
@@ -100,15 +104,21 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
+        AUTHOR: ${{ inputs.comment-author }}
       run: |
+        # Commenting is best effort: a read-only token (fork PRs) or an API error
+        # must not change the check's verdict.
         body="$RUNNER_TEMP/importguard-comment.md"
         { echo "<!-- importguard -->"; cat "$RUNNER_TEMP/importguard.md"; } > "$body"
         id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq '[.[] | select(.body | startswith("<!-- importguard -->"))][0].id // empty')
+          --jq ".[] | select(.user.login == \"$AUTHOR\" and (.body | startswith(\"<!-- importguard -->\"))) | .id" \
+          2>/dev/null | head -n 1) || id=""
         if [ -n "$id" ]; then
-          gh api -X PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" > /dev/null
+          gh api -X PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" > /dev/null \
+            || echo "::warning::importguard could not update its PR comment"
         else
-          gh api "repos/$REPO/issues/$PR/comments" -F "body=@$body" > /dev/null
+          gh api "repos/$REPO/issues/$PR/comments" -F "body=@$body" > /dev/null \
+            || echo "::warning::importguard could not post a PR comment (read-only token on a fork?)"
         fi
 
     - name: Fail on violations
