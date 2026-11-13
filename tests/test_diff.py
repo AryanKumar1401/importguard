@@ -1,34 +1,8 @@
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
-
-def git(project, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=project.root, check=True, capture_output=True, text=True
-    ).stdout
-
-
-@pytest.fixture
-def repo(project, monkeypatch):
-    for var, val in {
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.com",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.com",
-    }.items():
-        monkeypatch.setenv(var, val)
-    git(project, "init", "-q", "-b", "main")
-    git(project, "add", "-A")
-    git(project, "commit", "-qm", "base")
-    return project
-
-
-def commit(project, msg: str) -> None:
-    git(project, "add", "-A")
-    git(project, "commit", "-qm", msg)
+from tests.conftest import commit, git
 
 
 def test_clean_tree_passes_and_needs_no_setup(repo):
@@ -191,12 +165,17 @@ def test_uses_merge_base_not_base_tip(repo):
     assert not any(f["kind"] == "removed_package" for f in report["findings"])
 
 
-def test_new_entrypoint_has_no_base(repo):
-    repo.write("src/app/tool.py", "import heavydep\n")
-    code, report = repo.run_json("diff", "app.tool")
-    [e] = report["entrypoints"]
-    assert "not importable on base" in e["note"]
-    assert code == 0
+def test_new_entrypoint_is_compared_with_other_entrypoints(repo):
+    # app.tool does not exist on base; its packages are new unless another base
+    # entrypoint already loads them (fail closed rather than skipping the gate).
+    repo.write("src/app/tool.py", "import heavydep, lightdep\n")
+    code, report = repo.run_json("diff", "app.cli", "app.tool")
+    tool = next(e for e in report["entrypoints"] if e["name"] == "app.tool")
+    assert "not importable on base" in tool["note"]
+    assert code == 1
+    [f] = [f for f in report["findings"] if f["kind"] == "new_package"]
+    # lightdep is already loaded by app.cli on base, so only heavydep is new
+    assert f["data"]["packages"]["third_party"] == ["heavydep"]
 
 
 def test_worktree_is_cleaned_up(repo):

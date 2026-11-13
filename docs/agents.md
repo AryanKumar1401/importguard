@@ -43,11 +43,16 @@ if [ "$(printf '%s' "$input" | jq -r '.stop_hook_active')" = "true" ]; then
   exit 0
 fi
 cd "$CLAUDE_PROJECT_DIR" || exit 0
-if ! report=$(importguard diff -q 2>&1); then
-  printf 'importguard found startup import problems in your changes:\n%s\n' "$report" >&2
-  exit 2
-fi
-exit 0
+report=$(importguard diff -q 2>&1)
+case $? in
+  0) exit 0 ;;
+  1) # violations: send them back to Claude
+    printf 'importguard found startup import problems in your changes:\n%s\n' "$report" >&2
+    exit 2 ;;
+  *) # usage/config/tool error (no git base, no entrypoints...): don't block the agent
+    printf 'importguard could not run: %s\n' "$report" >&2
+    exit 0 ;;
+esac
 ```
 
 Register it in `.claude/settings.json`:
@@ -66,7 +71,7 @@ Register it in `.claude/settings.json`:
 }
 ```
 
-`diff` needs no setup in the repository, so the hook works on day one. Each run probes every entrypoint twice (base and working tree), typically well under a second per entrypoint. If that is too slow for a large project, use `importguard check --changed` with a lockfile, which skips entrypoints the edit cannot affect.
+`diff` needs no setup in a repository that has a base branch and declares its entrypoints (`[project.scripts]` or the package itself; otherwise set `entrypoints` under `[tool.importguard]`). When it cannot run, for example with no base branch, the hook stays out of the way rather than blocking the agent. Each run probes every entrypoint twice (base and working tree), typically well under a second per entrypoint. If that is too slow for a large project, use `importguard check --changed` with a lockfile, which skips entrypoints the edit cannot affect.
 
 The `stop_hook_active` guard lets Claude stop on its second attempt. That matters when a finding is intended and needs a human decision: Claude reports that the new dependency needs approval and stops, instead of looping or trying to silence the check. Because diff mode reads policy from the base commit, editing `pyproject.toml` to silence the check does not work.
 

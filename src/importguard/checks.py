@@ -7,7 +7,8 @@ from pathlib import Path
 from .config import Policy
 from .findings import EntrypointSummary, Finding, Remedy, Step
 from .lockfile import LockEntry
-from .probe import Module, ProbeResult
+from .probe import Module, ProbeResult, relpath
+from .sourcefix import lazy_rewrite
 
 EFFECT_LABELS = {
     "network": "network access",
@@ -51,20 +52,20 @@ def defer_remedy(result: ProbeResult, chain: list[Module], root: Path) -> Remedy
     hop = break_point(result, chain)
     if hop is None:
         return None
-    src = source_line(root, hop.file, hop.line)
-    replacement = None
-    if src and (src.startswith("import ") or src.startswith("from ")):
-        replacement = "lazy " + src
+    fix = lazy_rewrite(root, hop.file, hop.line, hop.name)
+    summary = (
+        f"defer the import at {hop.file}:{hop.line} - mark it `lazy` (Python 3.15+), "
+        "list it in `__lazy_modules__`, or move it into the function that uses it"
+    )
+    if fix.note and fix.replacement is None and fix.source:
+        summary += f" ({fix.note})"
     return Remedy(
         kind="defer_import",
-        summary=(
-            f"defer the import at {hop.file}:{hop.line} - mark it `lazy` (Python 3.15+), "
-            "list it in `__lazy_modules__`, or move it into the function that uses it"
-        ),
+        summary=summary,
         file=hop.file,
         line=hop.line,
-        source=src,
-        replacement=replacement,
+        source=fix.source or source_line(root, hop.file, hop.line),
+        replacement=fix.replacement,
     )
 
 
@@ -89,6 +90,25 @@ def approval_remedy(packages: list[str]) -> Remedy:
             "Agents should not approve their own changes."
         ),
     )
+
+
+def _group_key(m: Module, index: dict[str, Module], force_package: bool = False) -> str:
+    """One finding per place where new code enters startup.
+
+    Modules loaded by the same import statement in first- or third-party code
+    share a group (its chain shows the line to change). Stdlib modules pulled in by other stdlib or
+    preloaded modules are grouped by package; modules with no recorded importer
+    are grouped together (stdlib) or by package, instead of one finding each.
+    """
+    if m.parent and not force_package:
+        importer = index.get(m.parent)
+        if m.kind != "stdlib" or (importer is not None and importer.kind != "stdlib"):
+            # One group per import statement (`import a.b` can load a, a.b, ...).
+            return f"site:{m.parent}:{m.file}:{m.line}"
+        return f"stdlib:{m.package}"
+    if m.kind == "stdlib":
+        return "stdlib:unattributed"
+    return f"pkg:{m.package}"
 
 
 def _lock_diff(
@@ -119,6 +139,8 @@ def _lock_diff(
         version_note = f"lock was made with Python {lock_entry.python}, now {result.python}"
 
     def is_new(m: Module) -> bool:
+        if m.namespace:
+            return False  # a shared directory such as google/, not a distribution
         if m.kind == "first_party":
             return m.name not in lock_entry.first_party
         if m.kind == "third_party":
@@ -127,15 +149,33 @@ def _lock_diff(
 
     new = {m.name: m for m in result.modules if is_new(m)}
     claimed: set[str] = set()
+    order = {x.name: i for i, x in enumerate(result.modules)}
+    index = result.by_name()
+    groups: dict[str, tuple[Module, list[Module]]] = {}
+
+    def take(root_mod: Module, key: str) -> None:
+        group = [
+            x for x in result.subtree(root_mod.name) if x.name in new and x.name not in claimed
+        ]
+        if root_mod.name in new and root_mod.name not in claimed and root_mod not in group:
+            group.append(root_mod)
+        claimed.update(x.name for x in group)
+        if key in groups:
+            groups[key][1].extend(group)
+        else:
+            groups[key] = (root_mod, group)
+
     for m in result.modules:
         if m.name not in new or m.name in claimed or (m.parent and m.parent in new):
             continue
-        order = {x.name: i for i, x in enumerate(result.modules)}
-        group = sorted(
-            (x for x in result.subtree(m.name) if x.name in new and x.name not in claimed),
-            key=lambda x: order[x.name],
-        )
-        claimed.update(x.name for x in group)
+        take(m, _group_key(m, index))
+    for m in result.modules:
+        # Never reachable from a root (e.g. parents forming a cycle): still report.
+        if m.name in new and m.name not in claimed:
+            take(m, _group_key(m, index, force_package=True))
+
+    for m, members in groups.values():
+        group = sorted({x.name: x for x in members}.values(), key=lambda x: order[x.name])
         pkgs: dict[str, list[str]] = {"third_party": [], "stdlib": [], "first_party": []}
         for x in group:
             bucket = pkgs[x.kind]
@@ -268,6 +308,35 @@ def check_result(
                 subject=entrypoint,
                 data={"traceback": tb_tail},
                 remedies=[Remedy(kind="fix_error", summary="fix the exception raised at import")],
+            )
+        )
+
+    # Project code that ran at interpreter startup (sitecustomize, usercustomize,
+    # .pth files) executes before the probe and is invisible to it.
+    hooks = [m for m in result.startup if m.kind == "first_party"]
+    if hooks:
+        names = ", ".join(m.name for m in hooks)
+        files = [relpath(m.origin, root) for m in hooks if m.origin]
+        findings.append(
+            Finding(
+                id=f"preloaded_code:{entrypoint}",
+                kind="preloaded_code",
+                severity="error",
+                entrypoint=entrypoint,
+                message=(
+                    f"project code runs at interpreter startup ({names}); importguard "
+                    "cannot observe what it imports or does"
+                ),
+                subject=hooks[0].name,
+                data={"modules": [m.name for m in hooks], "files": files},
+                remedies=[
+                    Remedy(
+                        kind="investigate",
+                        summary="remove the startup hook from the import path, or move "
+                        "that code into an explicit initialisation step",
+                        file=files[0] if files else None,
+                    )
+                ],
             )
         )
 

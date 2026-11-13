@@ -160,6 +160,7 @@ REPORT_SCHEMA: dict[str, Any] = {
                             "lazy_unsafe",
                             "lazy_unexercised",
                             "policy_changed",
+                            "preloaded_code",
                         ]
                     },
                     "severity": {"enum": ["error", "warning", "info"]},

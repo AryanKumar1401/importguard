@@ -16,6 +16,7 @@ your tests and how much startup it saves.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from pathlib import Path
 from .checks import source_line
 from .findings import Finding, Remedy
 from .probe import ProbeResult, Statement, probe_env, run_probe
+from .sourcefix import lazy_rewrite
 
 Key = tuple[str, str, str]
 
@@ -43,24 +45,89 @@ def _importguard_lazy():
         for raw in fh.read().splitlines():
             if raw:
                 keys.add(tuple(raw.split("\t")))
-    hits = set()
+    hits = {}  # key -> {(file, line)}
+    sources = {}
+
+    def _line(filename, lineno):
+        # Plain open(): importing linecache/tokenize here would recurse into imports.
+        lines = sources.get(filename)
+        if lines is None:
+            try:
+                with open(filename, "rb") as fh:
+                    lines = fh.read().decode("utf-8", "replace").splitlines()
+            except Exception:
+                lines = []
+            sources[filename] = lines
+        return lines[lineno - 1] if 0 < lineno <= len(lines) else ""
 
     def _filter(importer, name, fromlist):
+        frame = _sys._getframe(1)
+        if importer == "__main__":
+            # `python -m pkg.mod`: key statements by the module's real name.
+            main_spec = getattr(_sys.modules.get("__main__"), "__spec__", None)
+            if main_spec is not None and main_spec.name:
+                importer = main_spec.name
         key = (importer, name, ",".join(fromlist) if fromlist else "")
         if key in keys:
-            hits.add(key)
+            hits.setdefault(key, set()).add((frame.f_code.co_filename, frame.f_lineno))
             return True
-        return False
+        # Everything else keeps the laziness its source asked for.
+        listed = frame.f_globals.get("__lazy_modules__")
+        try:
+            if listed is not None and name in listed:
+                return True
+        except TypeError:
+            pass
+        text = _line(frame.f_code.co_filename, frame.f_lineno).lstrip()
+        return text.startswith("lazy ") or text.startswith("lazy\t")
 
     _sys.set_lazy_imports_filter(_filter)
     _sys.set_lazy_imports("all")
     with open(hits_path, "a", encoding="utf-8") as fh:
         fh.write("#active\n")
 
+    def _bound_names(filename, lineno):
+        import ast
+
+        try:
+            with open(filename, "rb") as fh:
+                tree = ast.parse(fh.read())
+        except Exception:
+            return []
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and node.lineno == lineno:
+                for alias in node.names:
+                    if alias.asname:
+                        names.append(alias.asname)
+                    elif isinstance(node, ast.Import):
+                        names.append(alias.name.partition(".")[0])
+                    else:
+                        names.append(alias.name)
+        return names
+
     def _flush():
+        lines = []
+        for key, sites in hits.items():
+            lines.append("hit\t" + "\t".join(key))
+            module = _sys.modules.get(key[0])
+            if key[0] == _getattr_main_name():
+                module = module or _sys.modules.get("__main__")
+            namespace = getattr(module, "__dict__", {})
+            used = False
+            for filename, lineno in sites:
+                for bound in _bound_names(filename, lineno):
+                    value = namespace.get(bound)
+                    if value is not None and type(value).__name__ != "lazy_import":
+                        used = True
+            if used:
+                lines.append("used\t" + "\t".join(key))
         with open(hits_path, "a", encoding="utf-8") as fh:
-            for key in hits:
-                fh.write("\t".join(key) + "\n")
+            fh.write("".join(line + "\n" for line in lines))
+
+    def _getattr_main_name():
+        main_spec = getattr(_sys.modules.get("__main__"), "__spec__", None)
+        return getattr(main_spec, "name", None)
 
     import atexit
 
@@ -96,7 +163,9 @@ class Candidate:
     saves_modules: int = 0
     saves_ms: float = 0.0
     status: str = "untested"  # safe | unsafe | untested
-    exercised: bool = False
+    exercised: bool = False  # tests used the lazily imported name (it was reified)
+    executed: bool = False  # tests ran the import statement at all
+    reason: str | None = None  # why it is not verified
     failure: str | None = None
     has_effects: bool = False
 
@@ -108,9 +177,10 @@ class Candidate:
 @dataclass
 class TestRun:
     passed: bool
-    hits: set[Key]
+    hits: set[Key]  # statements executed (lazily) during the run
     active: bool
     output: str
+    used: set[Key] = field(default_factory=set)  # lazily imported names then used
 
 
 @dataclass
@@ -169,32 +239,52 @@ def run_tests(
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(boot), env.get("PYTHONPATH", "")) if p)
         env["IMPORTGUARD_LAZY_SPEC"] = str(spec)
         env["IMPORTGUARD_LAZY_HITS"] = str(hits_path)
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=root,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                stdin=subprocess.DEVNULL,
-            )
-            passed, output = proc.returncode == 0, proc.stdout + proc.stderr
-        except subprocess.TimeoutExpired:
-            passed, output = False, f"test command timed out after {timeout:.0f}s"
+        passed, output = _run_shell(command, cwd=root, env=env, timeout=timeout)
         hits: set[Key] = set()
+        used: set[Key] = set()
         active = False
         if hits_path.exists():
-            for raw in hits_path.read_text(encoding="utf-8").splitlines():
+            for raw in hits_path.read_text(encoding="utf-8", errors="replace").splitlines():
                 if raw == "#active":
                     active = True
-                elif raw:
-                    imp, name, fl = raw.split("\t")
-                    hits.add((imp, name, fl))
-    return TestRun(passed=passed, hits=hits, active=active, output=output)
+                    continue
+                parts = raw.split("\t")
+                if len(parts) != 4 or parts[0] not in ("hit", "used"):
+                    continue  # tolerate interleaved writes from parallel workers
+                key = (parts[1], parts[2], parts[3])
+                (hits if parts[0] == "hit" else used).add(key)
+    return TestRun(passed=passed, hits=hits, active=active, output=output, used=used)
+
+
+def _run_shell(command: str, *, cwd: Path, env: dict[str, str], timeout: float) -> tuple[bool, str]:
+    """Run a shell command; on timeout kill its whole process group."""
+    posix = os.name == "posix"
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=posix,
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if posix:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        else:  # pragma: no cover
+            proc.kill()
+        proc.communicate()
+        return False, f"test command timed out after {timeout:.0f}s"
+    return proc.returncode == 0, out
 
 
 def failure_excerpt(output: str, limit: int = 12) -> str:
@@ -208,25 +298,31 @@ def failure_excerpt(output: str, limit: int = 12) -> str:
 
 
 def isolate_failures(
-    candidates: list[Candidate], fails: Callable[[list[Candidate]], bool]
+    candidates: list[Candidate],
+    fails: Callable[[list[Candidate]], bool],
+    keep: list[Candidate] | None = None,
 ) -> list[Candidate]:
     """Adaptive group testing: the candidates that make ``fails`` true.
 
-    ``candidates`` must already be known to fail together. When neither half
-    fails alone the failure needs a combination; the whole group is blamed.
+    ``keep + candidates`` must be known to fail and ``keep`` alone to pass. When
+    neither half fails on its own, the failure needs members of both halves:
+    each half is searched with the other kept lazy, so only the interacting
+    imports are blamed, not the whole group.
     """
+    keep = keep or []
     if len(candidates) <= 1:
         return list(candidates)
     mid = len(candidates) // 2
     left, right = candidates[:mid], candidates[mid:]
-    left_fails, right_fails = fails(left), fails(right)
-    if not left_fails and not right_fails:
-        return list(candidates)
+    left_fails, right_fails = fails(keep + left), fails(keep + right)
     culprits: list[Candidate] = []
     if left_fails:
-        culprits += isolate_failures(left, fails)
+        culprits += isolate_failures(left, fails, keep)
     if right_fails:
-        culprits += isolate_failures(right, fails)
+        culprits += isolate_failures(right, fails, keep)
+    if not left_fails and not right_fails:
+        culprits += isolate_failures(left, fails, keep + right)
+        culprits += isolate_failures(right, fails, keep + left)
     return culprits
 
 
@@ -317,7 +413,7 @@ def verify_lazy(
         pending = [c for c in candidates if c.status != "unsafe"]
         outputs: dict[Key, str] = {}
         last_pass: TestRun | None = None
-        for _round in range(4):
+        for _round in range(8):
             if not pending:
                 break
             say(f"running tests with {len(pending)} import(s) lazy")
@@ -344,9 +440,22 @@ def verify_lazy(
         if last_pass is not None:
             for c in pending:
                 c.status = "safe"
-                c.exercised = c.key in last_pass.hits
+                c.executed = c.key in last_pass.hits
+                c.exercised = c.key in last_pass.used
+                if not c.executed:
+                    c.reason = f"tests never imported {c.statement.importer}"
+                elif not c.exercised:
+                    c.reason = (
+                        f"tests imported {c.statement.importer} but never used {c.statement.name}"
+                    )
         elif pending:
             notes.append("could not converge on a passing set; remaining candidates untested")
+            for c in pending:
+                c.reason = "tests did not converge on a passing set"
+    else:
+        for c in candidates:
+            if c.status != "unsafe":
+                c.reason = "no --test command given" if not test_command else None
 
     safe_keys = [c.key for c in candidates if c.status != "unsafe"]
     final = probe_lazy(safe_keys) if safe_keys else None
@@ -358,9 +467,11 @@ def lazy_findings(entrypoint: str, outcome: LazyOutcome, root: Path, tested: boo
     ordered = sorted(outcome.candidates, key=lambda c: (c.status != "unsafe", -c.saves_modules))
     for c in ordered:
         s = c.statement
-        src = source_line(root, s.file, s.line)
+        fix = lazy_rewrite(root, s.file, s.line, s.name)
+        src = fix.source or source_line(root, s.file, s.line)
         where = f"{s.file}:{s.line}"
         what = f"{s.name}" + (f" ({s.fromlist})" if s.fromlist else "")
+        ident = f"{entrypoint}:{s.importer}:{s.name}:{s.fromlist}:{s.line}"
         data = {
             "statement": {"importer": s.importer, "module": s.name, "fromlist": s.fromlist},
             "saves_modules": c.saves_modules,
@@ -372,7 +483,7 @@ def lazy_findings(entrypoint: str, outcome: LazyOutcome, root: Path, tested: boo
             data["failure"] = c.failure
             findings.append(
                 Finding(
-                    id=f"lazy_unsafe:{entrypoint}:{s.importer}:{s.name}:{s.line}",
+                    id=f"lazy_unsafe:{ident}",
                     kind="lazy_unsafe",
                     severity="warning",
                     entrypoint=entrypoint,
@@ -393,7 +504,7 @@ def lazy_findings(entrypoint: str, outcome: LazyOutcome, root: Path, tested: boo
             )
             continue
         verified = c.status == "safe" and c.exercised
-        replacement = "lazy " + src if src and src.startswith(("import ", "from ")) else None
+        replacement = fix.replacement
         effects_note = (
             " (it has import-time side effects; check they can run later)" if c.has_effects else ""
         )
@@ -403,14 +514,18 @@ def lazy_findings(entrypoint: str, outcome: LazyOutcome, root: Path, tested: boo
             gain = "saves nothing alone, but is needed for the combined saving"
         if verified:
             kind, confidence = "lazy_safe", "verified"
-            msg = f"make lazy: {what} at {where} {gain}; tests pass with it lazy{effects_note}"
+            msg = (
+                f"make lazy: {what} at {where} {gain}; tests pass with it lazy and use it"
+                f"{effects_note}"
+            )
         else:
             kind, confidence = "lazy_unexercised", "unexercised"
-            why = "tests never imported this module" if tested else "no --test command given"
+            why = c.reason or ("no --test command given" if not tested else "not exercised")
             msg = f"could be lazy: {what} at {where} {gain}; not verified ({why}){effects_note}"
+        data["reason"] = None if verified else c.reason
         findings.append(
             Finding(
-                id=f"{kind}:{entrypoint}:{s.importer}:{s.name}:{s.line}",
+                id=f"{kind}:{ident}",
                 kind=kind,
                 severity="info",
                 entrypoint=entrypoint,
@@ -424,6 +539,7 @@ def lazy_findings(entrypoint: str, outcome: LazyOutcome, root: Path, tested: boo
                         summary=(
                             "prefix the statement with `lazy` (3.15+) or add "
                             f"{s.name!r} to `__lazy_modules__` in {s.importer}"
+                            + (f"; {fix.note}" if fix.note and not replacement else "")
                         ),
                         file=s.file,
                         line=s.line,

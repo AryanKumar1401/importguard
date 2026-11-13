@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import textwrap
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -108,3 +109,29 @@ def python315() -> str:
     if py is None:
         pytest.skip("needs a Python 3.15 interpreter (set IMPORTGUARD_TEST_PYTHON315)")
     return py
+
+
+def git(project: Project, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=project.root, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def commit(project: Project, msg: str) -> None:
+    git(project, "add", "-A")
+    git(project, "commit", "-qm", msg)
+
+
+@pytest.fixture
+def repo(project: Project, monkeypatch: pytest.MonkeyPatch) -> Project:
+    for var, val in {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }.items():
+        monkeypatch.setenv(var, val)
+    git(project, "init", "-q", "-b", "main")
+    git(project, "add", "-A")
+    git(project, "commit", "-qm", "base")
+    return project

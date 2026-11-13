@@ -97,6 +97,8 @@ def render_text(report: Report, *, quiet: bool = False) -> str:
             out.append(
                 f"{mark} {e.name:<{width}}  {e.modules} modules{locked} {s.dot} {e.total_ms:.0f}ms"
             )
+            if e.note:
+                out.append(f"  {' ' * width}  {e.note}")
         out.append("")
 
     multi = len({f.entrypoint for f in report.findings}) > 1
@@ -168,8 +170,9 @@ def _render_lazy(report: Report, s: _Style) -> list[str]:
         f"{d['entrypoint']}: {d['eager']['modules']} modules eager",
     ]
     if d.get("lazy"):
+        which = "the safe set" if d.get("tested") else "all candidates (untested)"
         lines[0] += (
-            f" {s.arrow} {d['lazy']['modules']} with the safe set lazy "
+            f" {s.arrow} {d['lazy']['modules']} with {which} lazy "
             f"(-{d['eager']['modules'] - d['lazy']['modules']} modules, "
             f"~{d['eager']['ms'] - d['lazy']['ms']:.0f}ms)"
         )
@@ -208,6 +211,11 @@ def render_markdown(report: Report) -> str:
         return f"### importguard\n\n:x: {report.tool_error}\n"
     status = ":white_check_mark:" if report.ok else ":x:"
     out = [f"### {status} importguard {report.command}", ""]
+    if report.command in _COMMAND_RENDERERS:
+        # Informational commands: their text rendering, verbatim.
+        text = render_text(report).rstrip()
+        fence = "~~~~" if "```" in text else "```"
+        return "\n".join([*out, fence, text, fence, ""])
     base = report.data.get("base") if report.command == "diff" else None
     if base:
         out += [f"Compared with `{base['sha'][:10]}` ({base['ref']}).", ""]
