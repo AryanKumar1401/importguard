@@ -48,14 +48,34 @@ def _finding_text(f: Finding, s: _Style, multi: bool) -> list[str]:
         for st in hops:
             loc = f"{st.file}:{st.line}"
             lines.append(f"{pad}{loc:<{width}} {s.arrow} {st.module}")
+    sites = f.data.get("sites") if f.data else None
+    if isinstance(sites, list) and len(sites) > 1:
+        lines.append(f"{pad}imported at:")
+        for site in sites:
+            src = f"  {site['source']}" if site.get("source") else ""
+            lines.append(f"{pad}  {site['file']}:{site['line']}{src}")
     tb = f.data.get("traceback") if f.data else None
     if tb:
         lines.extend(pad + ln for ln in str(tb).splitlines())
     failure = f.data.get("failure") if f.data else None
     if failure:
         lines.extend(pad + "| " + ln for ln in str(failure).splitlines()[-6:])
-    for i, r in enumerate(f.remedies):
-        label = "fix:" if i == 0 else "or: "
+    defer = [r for r in f.remedies if r.kind == "defer_import"]
+    remedies = f.remedies
+    if len(defer) > 1:
+        # Every site has to change, or the package still loads: one fix, not
+        # alternatives.
+        lines.append(
+            f"{pad}fix: defer all {len(defer)} imports (`lazy` on Python 3.15+, "
+            "`__lazy_modules__`, or move each into the function that uses it):"
+        )
+        for r in defer:
+            lines.append(
+                f"{pad}      {r.file}:{r.line}  {s.c(r.replacement or r.source or '', '32')}"
+            )
+        remedies = [r for r in f.remedies if r.kind != "defer_import"]
+    for i, r in enumerate(remedies):
+        label = "fix:" if i == 0 and len(defer) <= 1 else "or: "
         if r.command and not r.file:
             lines.append(f"{pad}{label} {r.command}")
             continue
@@ -220,7 +240,17 @@ def render_markdown(report: Report) -> str:
             for st in hops:
                 out.append(f"{st.file}:{st.line} -> {st.module}")
             out.append("```")
-        for r in f.remedies[:2]:
+        sites = f.data.get("sites")
+        if isinstance(sites, list) and len(sites) > 1:
+            out.append("Imported at: " + ", ".join(f"`{x['file']}:{x['line']}`" for x in sites))
+        defer = [r for r in f.remedies if r.kind == "defer_import"]
+        rest = [r for r in f.remedies if r.kind != "defer_import"][:1]
+        if len(defer) > 1:
+            out.append(f"- defer all {len(defer)} imports:")
+            for r in defer:
+                out.append(f"  - `{r.file}:{r.line}`: `{r.replacement or r.source}`")
+            defer = []
+        for r in defer + rest if defer else rest if len(f.remedies) > len(rest) else f.remedies[:2]:
             if r.command and not r.file:
                 out.append(f"- `{r.command}`")
             else:
