@@ -1,8 +1,5 @@
 name: importguard comment
-description: >-
-  Posts importguard's report on pull requests from forks. Run it from a
-  workflow_run workflow: it only downloads the report the PR's run uploaded and
-  never runs the PR's code.
+description: "Posts importguard's report on pull requests from forks, from a workflow_run workflow. Never runs the PR's code."
 branding:
   icon: message-square
   color: green
