@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "importguardpy"
-version = "0.2.1"
+version = "0.2.2"
 description = "A pull-request report of what a change adds to your Python program's startup: new packages and the line that pulled them in, forbidden modules, import-time side effects"
 readme = "README.md"
 license = "MIT"

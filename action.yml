@@ -1,8 +1,5 @@
 name: importguard
-description: >-
-  A pull-request report of what a change adds to your Python program's startup: new
-  packages with the line that pulled them in, forbidden modules, import-time side
-  effects. No setup: the baseline is the PR's base commit.
+description: "Reports what a pull request adds to Python startup: new packages, the import that pulled them in, import-time side effects."
 branding:
   icon: shield
   color: green

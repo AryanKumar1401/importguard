@@ -59,7 +59,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
       - run: pip install -e .               # your project, with its dependencies
-      - uses: AryanKumar1401/importguard@v0.2.1
+      - uses: AryanKumar1401/importguard@v0.2.2
 ```
 
 It needs no config file, and by default it can't break your CI: a new startup package is a warning, and only the rules listed under "What a pull request sees" fail the job.
@@ -91,7 +91,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: AryanKumar1401/importguard/comment@v0.2.1
+      - uses: AryanKumar1401/importguard/comment@v0.2.2
 ```
 
 `workflow_run` always runs this file from your default branch, with a write token. It downloads the report the PR's run uploaded and never checks out or runs the PR's code. The report comes from a run the fork controls, so it is handled as untrusted data:
