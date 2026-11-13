@@ -28,7 +28,9 @@ class Policy:
     forbid: list[str] = field(default_factory=list)
     allow: list[str] = field(default_factory=list)  # approved third-party packages
     forbid_effects: list[str] = field(default_factory=lambda: ["network", "subprocess"])
-    new_packages: str = "error"
+    # A report first: a new startup package is shown on the PR, not a failure.
+    # Set "error" to gate on it.
+    new_packages: str = "warning"
     new_stdlib: str = "info"
     new_first_party: str = "info"
     max_ms: float | None = None

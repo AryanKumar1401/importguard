@@ -1,20 +1,17 @@
 """Regression tests for findings from the adversarial review.
 
 Each test reproduces a confirmed finding; the ids in the names (A1..A14 for the
-engine/diff review, B1..B15 for the verify-lazy/CLI review) map to the review.
+engine/diff review, B1..B15 for the CLI review; tests for the removed
+verify-lazy command went with it) map to the review.
 """
 
 from __future__ import annotations
 
-import os
-import shlex
-import time
 from pathlib import Path
 
 import pytest
 
-from importguard.lazy import Candidate, isolate_failures
-from importguard.probe import Statement, run_probe
+from importguard.probe import run_probe
 from importguard.sourcefix import lazy_rewrite
 from tests.conftest import commit
 
@@ -36,7 +33,7 @@ def test_a1_head_cannot_choose_the_interpreter(repo, tmp_path):
     fake.chmod(0o755)
     repo.write("pyproject.toml", POLICY + f'python = "{fake}"\n')
     repo.write("src/app/core.py", "import heavydep\n")
-    code, report = repo.run_json("diff")
+    code, report = repo.run_json("diff", "--strict")
     assert code == 1
     assert "new_package" in _kinds(report)
 
@@ -54,7 +51,7 @@ def test_a3_spoofed_name_does_not_hide_package(repo):
         "src/app/core.py",
         '__name__ = "heavydep"\nimport heavydep\n__name__ = "app.core"\n',
     )
-    code, report = repo.run_json("diff", "app.cli")
+    code, report = repo.run_json("diff", "--strict", "app.cli")
     assert code == 1
     assert "heavydep" in {
         p
@@ -67,7 +64,7 @@ def test_a3_spoofed_name_does_not_hide_package(repo):
 def test_a4_deleting_from_sys_modules_does_not_hide_package(repo):
     repo.dist("solodep/__init__.py", "X = 1\n")  # single module: nothing else reveals it
     repo.write("src/app/core.py", "import sys\nimport solodep\ndel sys.modules['solodep']\n")
-    code, report = repo.run_json("diff", "app.cli")
+    code, report = repo.run_json("diff", "--strict", "app.cli")
     assert code == 1
     assert "new_package" in _kinds(report)
 
@@ -76,7 +73,7 @@ def test_a5_base_that_cannot_import_fails_closed(repo):
     repo.write("src/app/cli.py", "import heavydep\nraise RuntimeError('broken on base')\n")
     commit(repo, "broken base")
     repo.write("src/app/cli.py", "import heavydep\n")
-    code, report = repo.run_json("diff", "app.cli")
+    code, report = repo.run_json("diff", "--strict", "app.cli")
     [e] = report["entrypoints"]
     assert "everything it loads counts as new" in e["note"]
     assert code == 1
@@ -88,7 +85,7 @@ def test_a6_namespace_packages_are_compared_per_distribution(repo):
     repo.write("src/app/core.py", "import google.protobuf\n")
     commit(repo, "uses protobuf")
     repo.write("src/app/core.py", "import google.protobuf\nimport google.cloud.storage\n")
-    code, report = repo.run_json("diff", "app.cli")
+    code, report = repo.run_json("diff", "--strict", "app.cli")
     assert code == 1
     [f] = [f for f in report["findings"] if f["kind"] == "new_package"]
     assert f["data"]["packages"]["third_party"] == ["google.cloud.storage"]
@@ -97,7 +94,7 @@ def test_a6_namespace_packages_are_compared_per_distribution(repo):
 def test_a7_new_file_shadowing_a_startup_module_rechecks(project):
     project.run("snapshot")
     project.write("src/lightdep.py", "import heavydep\n")
-    code, report = project.run_json("check", "--changed", "src/lightdep.py")
+    code, report = project.run_json("check", "--strict", "--changed", "src/lightdep.py")
     assert all(e["status"] != "skipped" for e in report["entrypoints"])
     assert code == 1
 
@@ -128,7 +125,7 @@ def test_a9_gitignored_vendored_code_is_third_party(repo):
     )
     commit(repo, "vendor path")
     repo.write("src/app/core.py", "import vendeddep\n")
-    code, report = repo.run_json("diff", "app.cli")
+    code, report = repo.run_json("diff", "--strict", "app.cli")
     assert code == 1
     assert "new_package" in _kinds(report)
 
@@ -178,12 +175,14 @@ def test_a13_one_finding_per_import_statement(repo):
 def test_b4_changed_accepts_absolute_and_cwd_relative_paths(project, monkeypatch):
     project.run("snapshot")
     project.write("src/app/core.py", "import heavydep\n")
-    code, _ = project.run_json("check", "--changed", str(project.root / "src/app/core.py"))
+    code, _ = project.run_json(
+        "check", "--strict", "--changed", str(project.root / "src/app/core.py")
+    )
     assert code == 1
     monkeypatch.chdir(project.root / "src" / "app")
     from importguard.cli import main
 
-    assert main(["check", "--changed", "core.py", "-q"]) == 1
+    assert main(["check", "--strict", "--changed", "core.py", "-q"]) == 1
 
 
 def test_b4_changed_rejects_paths_outside_project(project, tmp_path):
@@ -211,99 +210,6 @@ def test_b6_replacement_targets_exactly_one_statement(tmp_path, line, module, re
         "    message,\n)\nimport bigdep  # comment\n"
     )
     assert lazy_rewrite(tmp_path, "m.py", line, module).replacement == replacement
-
-
-# --- verify-lazy -----------------------------------------------------------------
-
-
-def _cands(n: int) -> list[Candidate]:
-    return [Candidate(Statement("m", f"x{i}", "", "m.py", i), []) for i in range(n)]
-
-
-def test_b5_interaction_blames_only_interacting_imports():
-    found = isolate_failures(_cands(40), lambda g: {"x0", "x39"} <= {c.statement.name for c in g})
-    assert sorted(c.statement.name for c in found) == ["x0", "x39"]
-
-
-def test_b13_max_candidates_must_be_positive(project):
-    with pytest.raises(SystemExit):
-        project.run("verify-lazy", "app.cli", "--max-candidates", "-1")
-
-
-@pytest.mark.skipif(os.name != "posix", reason="process groups")
-def test_b15_timeout_kills_the_whole_command(tmp_path):
-    from importguard.lazy import _run_shell
-
-    marker = tmp_path / "late"
-    start = time.monotonic()
-    passed, out = _run_shell(
-        f"sleep 1.5 && touch {shlex.quote(str(marker))}",
-        cwd=tmp_path,
-        env=dict(os.environ),
-        timeout=0.3,
-    )
-    assert not passed and "timed out" in out
-    assert time.monotonic() - start < 1.4
-    time.sleep(1.6)
-    assert not marker.exists()
-
-
-def _lazy_project(project, cli: str) -> None:
-    project.write("src/app/__init__.py", "REGISTRY = []\n")
-    project.write("src/app/cli.py", cli)
-    project.write("src/app/plugins.py", "from app import REGISTRY\nREGISTRY.append('csv')\n")
-
-
-def test_b1_unused_import_is_not_verified(project, python315):
-    _lazy_project(project, "import heavydep\n\ndef main():\n    return heavydep\n")
-    test_cmd = f"{shlex.quote(python315)} -c 'import app.cli'"  # never calls main()
-    code, report = project.run_json(
-        "verify-lazy", "app.cli", "--python", python315, "--test", test_cmd
-    )
-    assert code == 0, report
-    [f] = [f for f in report["findings"] if f["subject"] == "heavydep"]
-    assert f["kind"] == "lazy_unexercised"
-    assert "never used heavydep" in f["data"]["reason"]
-
-
-def test_b2_explicit_lazy_imports_stay_lazy(project, python315):
-    project.write("src/cyc/__init__.py", "")
-    project.write("src/cyc/a.py", "lazy import cyc.b\nX = 1\n\ndef f():\n    return cyc.b.Y\n")
-    project.write("src/cyc/b.py", "from cyc.a import X\nY = X + 1\n")
-    _lazy_project(project, "import heavydep\nimport cyc.a\n\ndef main():\n    return heavydep\n")
-    check = "import app.cli, cyc.a; assert cyc.a.f() == 2; app.cli.main()"
-    test_cmd = f"{shlex.quote(python315)} -c {shlex.quote(check)}"
-    code, report = project.run_json(
-        "verify-lazy", "app.cli", "--python", python315, "--test", test_cmd
-    )
-    assert code == 0, report["tool_error"]
-
-
-def test_b3_python_dash_m_runs_are_keyed_by_module(project, python315):
-    _lazy_project(
-        project,
-        "import app.plugins\nfrom app import REGISTRY\n\n"
-        "if __name__ == '__main__':\n    print(REGISTRY)\n",
-    )
-    check = (
-        "import subprocess, sys, app.cli; "
-        "out = subprocess.run([sys.executable, '-m', 'app.cli'], capture_output=True, "
-        "text=True).stdout; assert 'csv' in out, out"
-    )
-    test_cmd = f"{shlex.quote(python315)} -c {shlex.quote(check)}"
-    _, report = project.run_json(
-        "verify-lazy", "app.cli", "--python", python315, "--test", test_cmd
-    )
-    [f] = [f for f in report["findings"] if f["subject"] == "app.plugins"]
-    assert f["kind"] == "lazy_unsafe"
-
-
-def test_b12_finding_ids_are_unique(project, python315):
-    # two statements on one line differ only by their fromlist
-    _lazy_project(project, "from email import message; from email import charset\n")
-    _, report = project.run_json("verify-lazy", "app.cli", "--python", python315)
-    ids = [f["id"] for f in report["findings"]]
-    assert len(ids) == len(set(ids))
 
 
 # --- CLI ---------------------------------------------------------------------------

@@ -6,8 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.2.0] - unreleased
 
-A redesign. importguard now records runtime ground truth about imports, and its
-verdicts no longer depend on millisecond thresholds. Nothing from 0.1 is kept.
+A redesign around one job: a pull-request report of what a change adds to your
+program's startup, and why. Verdicts depend on which modules load, not on
+millisecond thresholds. Nothing from 0.1 is kept.
+
+### Repositioned (after a real-project comparison)
+- Replayed `diff` over the last 50 commits of httpie, black, mkdocs, pre-commit
+  and cookiecutter: no false alarms after the fixes below, under a second per run
+  (median), and no real regressions in that window. Startup regressions are rare,
+  so `diff` is now a report first: a new startup package is a **warning** by default
+  (`new_packages = "error"` to gate), and the GitHub Action comments on the PR by
+  default. Forbidden modules and forbidden side effects still fail.
+- **Removed `verify-lazy`.** Compared with importcost's `audit` on cookiecutter and
+  black (Python 3.15), it caught a real unsafe case importcost missed, but found
+  fewer savings and was 6-10x slower. For migrating to `lazy import`, use importcost.
+- The CLI help and README lead with `diff`; `snapshot`/`check` are documented as
+  lockfile mode (the one way to catch dependency upgrades).
 
 ### Added
 - **`importguard diff`**: reports what the working tree adds to startup compared with its merge-base commit. It needs no setup and has nothing for the change to tamper with:
@@ -28,10 +42,6 @@ verdicts no longer depend on millisecond thresholds. Nothing from 0.1 is kept.
 - `check --changed [FILES]` / `--base REF`: re-checks only entrypoints whose startup graph contains a changed file.
 - `forbid` (transitive), `forbid_effects`, and per-entrypoint overrides in `[tool.importguard]`.
 - `why`, `show` and `effects` commands.
-- **`verify-lazy`** (Python 3.15+, PEP 810):
-  - discovers lazy-eligible import statements and measures what each saves;
-  - runs your test command with them lazy via `sys.set_lazy_imports_filter`;
-  - bisects test failures down to the imports that must stay eager.
 - Versioned JSON report (`--json`, `importguard schema`) with stable finding ids, import chains and typed remedies; Markdown output for PR comments; exit codes 0/1/2/3.
 - Composite GitHub Action (`action.yml`) with job summary and an updatable PR comment.
 - Agent integration guide (`docs/agents.md`) with a Claude Code Stop hook.
@@ -48,16 +58,8 @@ verdicts no longer depend on millisecond thresholds. Nothing from 0.1 is kept.
   - DNS lookups and sqlite file creation are detected; threads started at import get a short window;
   - `PYTHONPYCACHEPREFIX` writes are ignored.
 - New modules are grouped per import statement; stdlib internals and unattributed modules no longer produce one finding each.
+- Found replaying real projects: a PR that drops a dependency no longer fails closed (the base is compared with the missing third-party module stubbed out, and the report says so); Cython's bookkeeping modules are ignored; a package is no longer reported twice.
 - `check --changed`: explicit paths are resolved against the project root, and new files that could shadow or extend a startup module trigger a full re-check.
-- `verify-lazy`:
-  - "verified" now requires the tests to use the lazily imported name;
-  - the project's own `lazy` imports and `__lazy_modules__` stay lazy;
-  - `python -m` runs are keyed by module name;
-  - interacting failures blame only the interacting imports;
-  - replacements come from the AST, never making unrelated imports lazy;
-  - finding ids include the fromlist;
-  - timeouts kill the whole process group;
-  - `--max-candidates` must be positive.
 - Unexpected crashes exit 3 (tool error), not 1; output no longer fails on non-UTF-8 terminals; `--format markdown` works for every command.
 - GitHub Action: only updates its own PR comment and never fails the job because commenting failed. Docs: the workflow re-runs on `labeled`, and the agent hook blocks only on violations.
 - README: corrected the importcost comparison, and stated the threat model instead of claiming the check cannot be gamed.

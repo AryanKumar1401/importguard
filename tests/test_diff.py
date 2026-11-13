@@ -18,7 +18,7 @@ def test_clean_tree_passes_and_needs_no_setup(repo):
 
 def test_uncommitted_dependency_is_reported_with_approval_not_accept(repo):
     repo.write("src/app/core.py", "import heavydep\n")
-    code, report = repo.run_json("diff", "app.cli")
+    code, report = repo.run_json("diff", "--strict", "app.cli")
     assert code == 1
     [f] = [f for f in report["findings"] if f["kind"] == "new_package"]
     assert f["chain"][-1] == {
@@ -98,11 +98,11 @@ def test_change_cannot_loosen_its_own_policy(repo):
         allow = ["heavydep"]
         """,
     )
-    code, report = repo.run_json("diff")
+    code, report = repo.run_json("diff", "--strict")
     assert code == 1
     kinds = {f["kind"]: f for f in report["findings"]}
     assert kinds["forbidden_import"]["severity"] == "error"
-    assert kinds["new_package"]["severity"] == "error"
+    assert kinds["new_package"]["severity"] == "warning"
     assert kinds["policy_changed"]["data"]["keys"] == ["allow", "forbid"]
     assert report["data"]["policy_source"] == "base"
     # opting into the head policy is explicit and visible
@@ -169,7 +169,7 @@ def test_new_entrypoint_is_compared_with_other_entrypoints(repo):
     # app.tool does not exist on base; its packages are new unless another base
     # entrypoint already loads them (fail closed rather than skipping the gate).
     repo.write("src/app/tool.py", "import heavydep, lightdep\n")
-    code, report = repo.run_json("diff", "app.cli", "app.tool")
+    code, report = repo.run_json("diff", "--strict", "app.cli", "app.tool")
     tool = next(e for e in report["entrypoints"] if e["name"] == "app.tool")
     assert "not importable on base" in tool["note"]
     assert code == 1
@@ -211,9 +211,9 @@ def test_new_config_cannot_approve_itself(repo):
         '[project]\nname = "app"\nversion = "0"\n'
         '[tool.importguard]\nentrypoints = ["app.cli"]\nallow = ["*"]\n',
     )
-    code, report = repo.run_json("diff")
+    code, report = repo.run_json("diff", "--strict")
     assert code == 1
     kinds = {f["kind"]: f for f in report["findings"]}
-    assert kinds["new_package"]["severity"] == "error"
+    assert kinds["new_package"]["severity"] == "warning"
     assert kinds["policy_changed"]["severity"] == "info"  # adoption, applies after merge
     assert report["data"]["policy_source"] == "base (defaults)"
