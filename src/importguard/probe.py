@@ -36,6 +36,7 @@ class Module:
     # package, so google.cloud and google.protobuf are different packages.
     package: str = ""
     namespace: bool = False  # a namespace package: a directory, not a distribution
+    synthetic: bool = False  # put in sys.modules without a spec (e.g. cython_runtime)
 
     def __post_init__(self) -> None:
         if not self.package:
@@ -88,6 +89,7 @@ class ProbeResult:
     startup: list[Module] = field(default_factory=list)
     statements: list[Statement] = field(default_factory=list)
     lazy_hits: list[str] = field(default_factory=list)
+    stubbed: list[str] = field(default_factory=list)  # missing modules replaced by stand-ins
     total_us: int = 0
 
     @property
@@ -102,7 +104,11 @@ class ProbeResult:
         return {m.name: m for m in self.modules}
 
     def packages(self, kind: str) -> set[str]:
-        return {m.package for m in self.modules if m.kind == kind and not m.namespace}
+        return {
+            m.package
+            for m in self.modules
+            if m.kind == kind and not m.namespace and not m.synthetic
+        }
 
     def chain(self, name: str) -> list[Module]:
         """Import chain from the target down to ``name`` (inclusive)."""
@@ -245,8 +251,13 @@ def run_probe(
     lazy_keys: list[tuple[str, str, str]] | None = None,
     pythonpath: list[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
+    stubs: list[str] | None = None,
 ) -> ProbeResult:
-    """Import ``target`` in a fresh interpreter and return what happened."""
+    """Import ``target`` in a fresh interpreter and return what happened.
+
+    ``stubs``: missing modules to replace with inert stand-ins (base probes in
+    ``diff`` whose dependencies are no longer installed).
+    """
     root = root.resolve()
     interpreter = python or sys.executable
     with tempfile.TemporaryDirectory(prefix="importguard-") as tmp:
@@ -270,7 +281,7 @@ def run_probe(
             proc = subprocess.run(
                 cmd,
                 cwd=root,
-                env=probe_env(root, pythonpath),
+                env=probe_env(root, pythonpath) | {"IMPORTGUARD_STUBS": ",".join(stubs or [])},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -335,6 +346,7 @@ def _build_result(data: dict, stderr: str, root: Path) -> ProbeResult:  # type: 
                 cumulative_us=cum_us,
                 package=package_of(raw["name"]),
                 namespace=bool(raw.get("namespace")),
+                synthetic=bool(raw.get("synthetic")),
             )
         )
     _reclassify_ignored(modules, root)
@@ -385,5 +397,6 @@ def _build_result(data: dict, stderr: str, root: Path) -> ProbeResult:  # type: 
             for s in data.get("statements", [])
         ],
         lazy_hits=data.get("lazy_hits", []),
+        stubbed=data.get("stubbed", []),
         total_us=total,
     )

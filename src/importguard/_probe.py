@@ -16,6 +16,10 @@ is hardened against accidental blind spots (startup hooks, finders inserted
 ahead of it, modules deleted from sys.modules, spoofed ``__name__``); the host
 cross-checks its records against ``-X importtime`` output.
 
+env IMPORTGUARD_STUBS: comma-separated modules to replace with inert stand-ins
+  when they are missing (used to import a base commit whose dependencies are
+  no longer installed); stand-ins are not reported as loaded.
+
 argv: <out_path> <target> <mode> <lazy_spec_path>
   mode: "eager"    - normal import
         "discover" - eager import, plus record every lazy-eligible import
@@ -283,6 +287,52 @@ def _main():
     sys.addaudithook(audit)
     sys.meta_path.insert(0, Watcher)
 
+    stubs = [n for n in (os.environ.get("IMPORTGUARD_STUBS", "") if os else "").split(",") if n]
+    stubbed = set()
+    if stubs:
+        bootstrap = sys.modules["_frozen_importlib"]
+        module_type = type(sys)
+
+        class Inert:
+            # Stands in for anything taken from a stubbed module.
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __call__(self, *args, **kwargs):
+                return Inert()
+
+            def __getattr__(self, name):
+                return Inert()
+
+            def __getitem__(self, item):
+                return Inert()
+
+            def __mro_entries__(self, bases):
+                return (object,)
+
+        class StubLoader:
+            @staticmethod
+            def create_module(spec):
+                mod = module_type(spec.name)
+                mod.__getattr__ = lambda name: Inert()
+                mod.__path__ = []
+                return mod
+
+            @staticmethod
+            def exec_module(module):
+                stubbed.add(module.__name__)
+
+        class StubFinder:
+            # Appended last: only used when the real module cannot be found.
+            @staticmethod
+            def find_spec(fullname, path=None, target=None):
+                top = fullname.partition(".")[0]
+                if top in stubs:
+                    return bootstrap.ModuleSpec(fullname, StubLoader, is_package=True)
+                return None
+
+        sys.meta_path.append(StubFinder)
+
     threading = sys.modules.get("threading")
     threads_before = set(threading.enumerate()) if threading is not None else set()
 
@@ -336,7 +386,9 @@ def _main():
         return (origin if isinstance(origin, str) else None), namespace
 
     modules = []
-    known = set(records)
+    for name in stubbed:
+        records.pop(name, None)
+    known = set(records) | stubbed
     for name, parent, file, line in records.values():
         origin, namespace = describe(name)
         modules.append(
@@ -358,6 +410,7 @@ def _main():
     for name in list(sys.modules):
         if name not in preloaded and name not in known:
             origin, namespace = describe(name)
+            mod = sys.modules.get(name)
             modules.append(
                 {
                     "name": name,
@@ -368,6 +421,11 @@ def _main():
                     "namespace": namespace,
                     "stdlib": name.partition(".")[0] in std,
                     "present": True,
+                    # Inserted into sys.modules directly, with no spec or file
+                    # (e.g. Cython's cython_runtime): bookkeeping, not a package.
+                    "synthetic": origin is None
+                    and getattr(mod, "__spec__", None) is None
+                    and not namespace,
                 }
             )
     # Non-stdlib code that ran before the probe (sitecustomize, .pth files...).
@@ -410,6 +468,7 @@ def _main():
             for s in statements
         ],
         "lazy_hits": sorted("\t".join(k) for k in lazy_hits),
+        "stubbed": sorted(stubbed),
     }
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
