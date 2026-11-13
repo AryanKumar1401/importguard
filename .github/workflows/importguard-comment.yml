@@ -1,0 +1,22 @@
+# Posts importguard's report on pull requests from forks, whose own CI token is
+# read-only. workflow_run always runs this file from the default branch with a
+# write token; it downloads the report the PR's run uploaded and never checks
+# out or runs the PR's code.
+name: importguard comment
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  pull-requests: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # this repository's default branch, not the PR
+      - uses: ./comment

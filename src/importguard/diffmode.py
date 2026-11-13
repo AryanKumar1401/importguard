@@ -60,6 +60,14 @@ def _resolves(root: Path, ref: str) -> bool:
     )
 
 
+_FULL_SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+
+def _short(ref: str) -> str:
+    """A ref for display: full commit SHAs (as CI passes them) shortened."""
+    return ref[:10] if _FULL_SHA.fullmatch(ref) else ref
+
+
 def resolve_base(root: Path, ref: str | None) -> BaseRef:
     try:
         _git(root, "rev-parse", "--verify", "HEAD")
@@ -73,13 +81,16 @@ def resolve_base(root: Path, ref: str | None) -> BaseRef:
             continue
         try:
             sha = _git(root, "merge-base", cand, "HEAD")
-            return BaseRef(sha=sha, label=f"merge-base of HEAD and {cand}")
+            return BaseRef(sha=sha, label=f"merge-base of HEAD and {_short(cand)}")
         except subprocess.CalledProcessError:
             sha = _git(root, "rev-parse", f"{cand}^{{commit}}")
             return BaseRef(
                 sha=sha,
-                label=cand,
-                note=f"no merge-base with {cand} (shallow clone?); comparing against it directly",
+                label=_short(cand),
+                note=(
+                    f"no merge-base with {_short(cand)} (shallow clone?); "
+                    "comparing against it directly"
+                ),
             )
     if ref:
         raise ConfigError(f"--base {ref!r} is not a commit in this repository")
