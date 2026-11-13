@@ -16,6 +16,7 @@ is stored in the repository, so:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -199,20 +200,40 @@ def run_diff(
         runtime = policy_cfg
         interpreter = python or runtime.python
 
-        def probe(ep: str, root: Path) -> ProbeResult:
+        def probe(ep: str, root: Path, stubs: list[str] | None = None) -> ProbeResult:
             return run_probe(
                 ep,
                 root=root,
                 python=interpreter,
                 pythonpath=runtime.pythonpath,
                 timeout=runtime.timeout,
+                stubs=stubs,
             )
+
+        def probe_base(ep: str, head: ProbeResult) -> ProbeResult:
+            # The environment has the change's dependencies. If the base imports a
+            # module that is no longer installed (the change removed a dependency),
+            # retry with inert stand-ins so the comparison can still be made.
+            # Only third-party dependencies are stubbed: the project's own code
+            # missing on base (e.g. a new entrypoint) stays a real failure.
+            own = {ep.partition(".")[0]} | {
+                m.name.partition(".")[0] for m in head.modules if m.kind == "first_party"
+            }
+            stubs: list[str] = []
+            result = probe(ep, base_root)
+            while result.error is not None and len(stubs) < 5:
+                missing = _missing_module(result)
+                if missing is None or missing in stubs or missing in own:
+                    break
+                stubs.append(missing)
+                result = probe(ep, base_root, stubs)
+            return result
 
         heads = {ep: probe(ep, config.root) for ep in targets}
         bases: dict[str, ProbeResult] = {}
         shadowed: dict[str, str] = {}
         for ep in targets:
-            base_res = probe(ep, base_root)
+            base_res = probe_base(ep, heads[ep])
             shadow = _shadowed(ep, base_res, base_root)
             if shadow and not _exists_in(shadow, config.root, base_root):
                 # The entrypoint is new in this change; the base probe fell through
@@ -264,6 +285,13 @@ def run_diff(
             if base_res.ok:
                 findings = _only_new(findings, base_res, policy.max_ms)
                 summary.locked_modules = len(base_res.modules)
+                if base_res.stubbed:
+                    summary.note = (
+                        "base imports "
+                        + ", ".join(sorted({n.partition(".")[0] for n in base_res.stubbed}))
+                        + ", not installed here (this change likely removed it); "
+                        "compared with it stubbed out"
+                    )
             elif head.ok:
                 why = base_res.error.type if base_res.error else "?"
                 summary.note = (
@@ -293,6 +321,17 @@ def run_diff(
             }
         report.data["entrypoints"] = deltas
     return report
+
+
+_MISSING = re.compile(r"No module named '([^']+)'")
+
+
+def _missing_module(result: ProbeResult) -> str | None:
+    """Top-level name of the module whose absence made the import fail."""
+    if result.error is None or result.error.type != "ModuleNotFoundError":
+        return None
+    m = _MISSING.search(result.error.message)
+    return m.group(1).partition(".")[0] if m else None
 
 
 def _union_entry(entries: list[LockEntry]) -> LockEntry:

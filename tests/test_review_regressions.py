@@ -332,3 +332,19 @@ def test_hook_ignores_tool_errors(tmp_path):
     text = hook.read_text()
     script = text.split("```bash\n", 1)[1].split("```", 1)[0]
     assert "1) # violations" in script and "*) # usage/config/tool error" in script
+
+
+def test_base_needing_a_removed_dependency_is_compared_with_a_stub(repo):
+    # Found replaying cookiecutter: a commit dropped typing_extensions; the
+    # environment (head's deps) lacks it, so the base could not import and diff
+    # failed closed with a false alarm.
+    repo.dist("olddep/__init__.py", "class TypeAlias: pass\n")
+    repo.write("src/app/core.py", "from olddep import TypeAlias\n")
+    commit(repo, "uses olddep")
+    (repo.site / "olddep" / "__init__.py").unlink()
+    (repo.site / "olddep").rmdir()
+    repo.write("src/app/core.py", "TypeAlias = object\n")
+    code, report = repo.run_json("diff", "app.cli")
+    assert code == 0, report["findings"]
+    [e] = report["entrypoints"]
+    assert "olddep" in e["note"] and "stubbed" in e["note"]

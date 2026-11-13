@@ -139,8 +139,8 @@ def _lock_diff(
         version_note = f"lock was made with Python {lock_entry.python}, now {result.python}"
 
     def is_new(m: Module) -> bool:
-        if m.namespace:
-            return False  # a shared directory such as google/, not a distribution
+        if m.namespace or m.synthetic:
+            return False  # a shared directory such as google/, or bookkeeping, not a package
         if m.kind == "first_party":
             return m.name not in lock_entry.first_party
         if m.kind == "third_party":
@@ -173,6 +173,17 @@ def _lock_diff(
         # Never reachable from a root (e.g. parents forming a cycle): still report.
         if m.name in new and m.name not in claimed:
             take(m, _group_key(m, index, force_package=True))
+
+    # A group of modules with no recorded importer whose packages another group
+    # already reports is part of that addition, not a separate one.
+    for key in [k for k in groups if k.startswith("pkg:")]:
+        pkg = key[4:]
+        home = next(
+            (k for k, (_, ms) in groups.items() if k != key and any(x.package == pkg for x in ms)),
+            None,
+        )
+        if home is not None:
+            groups[home][1].extend(groups.pop(key)[1])
 
     for m, members in groups.values():
         group = sorted({x.name: x for x in members}.values(), key=lambda x: order[x.name])
