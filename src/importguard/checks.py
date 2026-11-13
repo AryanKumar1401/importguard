@@ -111,6 +111,108 @@ def _group_key(m: Module, index: dict[str, Module], force_package: bool = False)
     return f"pkg:{m.package}"
 
 
+def _new_package_message(pkgs: dict[str, list[str]], modules: int, ms: float, sites: int) -> str:
+    third = pkgs["third_party"]
+    label = "new third-party package" + ("s" if len(third) > 1 else "")
+    message = f"{label} at startup: {', '.join(third)} (+{modules} modules, ~{ms:.0f}ms)"
+    extras = []
+    public_std = [p for p in pkgs["stdlib"] if not p.startswith("_")]
+    if public_std:
+        more = f" (+{len(public_std) - 8} more)" if len(public_std) > 8 else ""
+        extras.append("stdlib: " + ", ".join(public_std[:8]) + more)
+    if pkgs["first_party"]:
+        extras.append("first-party: " + ", ".join(pkgs["first_party"][:5]))
+    if extras:
+        message += "; also pulls in " + "; ".join(extras)
+    if sites > 1:
+        message += f"; imported by {sites} statements"
+    return message
+
+
+def _merge_by_package(findings: list[Finding], *, mode: str) -> list[Finding]:
+    """One finding per new third-party package, however many lines import it.
+
+    Separate statements that bring in the same package (``import rich``,
+    ``from rich.console import Console``, ``from rich.traceback import
+    Traceback``) are one addition to review. Findings whose third-party
+    packages overlap are merged; every import site keeps its defer remedy.
+    """
+    news = [f for f in findings if f.kind == "new_package"]
+    if len(news) < 2:
+        return findings
+    parent = list(range(len(news)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner: dict[str, int] = {}
+    for i, f in enumerate(news):
+        for pkg in f.data["packages"]["third_party"]:
+            if pkg in owner:
+                parent[find(i)] = find(owner[pkg])
+            else:
+                owner[pkg] = i
+    clusters: dict[int, list[Finding]] = {}
+    for i, f in enumerate(news):
+        clusters.setdefault(find(i), []).append(f)
+
+    replacement: dict[str, Finding | None] = {}
+    for members in clusters.values():
+        if len(members) == 1:
+            continue
+        first = members[0]
+        pkgs: dict[str, list[str]] = {"third_party": [], "stdlib": [], "first_party": []}
+        for f in members:
+            for key, values in f.data["packages"].items():
+                for v in values:
+                    if v not in pkgs[key]:
+                        pkgs[key].append(v)
+        modules = sum(int(f.data["modules_added"]) for f in members)
+        ms = sum(float(f.data["est_ms"]) for f in members)
+        approved = all(bool(f.data.get("approved")) for f in members)
+        severity = min((f.severity for f in members), key=lambda sev: _SEVERITY_RANK.get(sev, 3))
+        defer = [r for f in members for r in f.remedies if r.kind == "defer_import"]
+        others = [r for r in first.remedies if r.kind != "defer_import"]
+        if mode == "diff":
+            others = [] if approved else [approval_remedy(pkgs["third_party"])]
+        sites = [{"file": r.file, "line": r.line, "source": r.source} for r in defer]
+        message = _new_package_message(pkgs, modules, ms, len(members))
+        if approved:
+            message = "approved: " + message
+        data = dict(first.data)
+        data.update(
+            packages=pkgs,
+            modules_added=modules,
+            est_ms=round(ms, 1),
+            approved=approved,
+            sites=sites,
+            entry_modules=[f.subject for f in members],
+        )
+        replacement[first.id] = Finding(
+            id=first.id,
+            kind="new_package",
+            severity=severity,
+            entrypoint=first.entrypoint,
+            message=message,
+            subject=first.subject,
+            chain=first.chain,
+            data=data,
+            remedies=defer + others,
+        )
+        for f in members[1:]:
+            replacement[f.id] = None
+    out: list[Finding] = []
+    for f in findings:
+        if f.kind != "new_package" or f.id not in replacement:
+            out.append(f)
+        elif (merged := replacement[f.id]) is not None:
+            out.append(merged)
+    return out
+
+
 def _lock_diff(
     entrypoint: str,
     result: ProbeResult,
@@ -285,6 +387,8 @@ def _lock_diff(
                 remedies=remedies,
             )
         )
+
+    findings = _merge_by_package(findings, mode=mode)
 
     current = {"third_party": result.packages("third_party"), "stdlib": result.packages("stdlib")}
     gone = sorted(set(lock_entry.third_party) - current["third_party"])

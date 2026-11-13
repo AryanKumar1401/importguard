@@ -6,11 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-13
+
 ### Added
 - **Claude skill** (`skills/importguard/SKILL.md`): it teaches Claude when to run `importguard diff`, how to apply its fixes (in a form valid for the project's Python versions), and when to hand a new startup dependency to a maintainer instead of silencing the check. Test cases are in `skills/importguard/evals/`.
 
 ### Fixed
 - `--python` given as a relative path (e.g. `.venv/bin/python`) now works with `diff`. It was looked up inside the temporary base checkout, where the virtualenv doesn't exist. A relative `python` in `[tool.importguard]` is resolved against the project root.
+- `diff` reported one finding per import statement, so a change that added `import rich` and `from rich.console import Console` showed the same package two or three times (found replaying Typer's history). Findings for the same third-party packages are now merged into one, which lists every import site and gives a single fix: defer all of them.
+
+### Changed
+- Releases publish from a pushed `v*` tag, which also creates the GitHub release with the changelog notes.
 
 ## [0.2.0] - 2026-11-13
 
@@ -84,5 +90,6 @@ millisecond thresholds. Nothing from 0.1 is kept.
 
 - Initial release: `importguard check <module>` with time budgets and banned imports.
 
+[0.2.1]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.1.0
