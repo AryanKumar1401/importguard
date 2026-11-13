@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "importguardpy"
-version = "0.1.0"
-description = "Measure and enforce import-time behavior in Python projects"
+version = "0.2.0"
+description = "A pull-request report of what a change adds to your Python program's startup: new packages and the line that pulled them in, forbidden modules, import-time side effects"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Aryan Kumar" }]
 maintainers = [{ name = "Aryan Kumar" }]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -22,11 +22,11 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Build Tools",
@@ -43,8 +43,12 @@ keywords = [
     "cold-start",
     "profiling",
     "lint",
+    "pull-request",
+    "code-review",
+    "dependencies",
+    "agents",
 ]
-dependencies = []
+dependencies = ["tomli>=1.1; python_version < '3.11'"]
 
 [project.optional-dependencies]
 dev = [
@@ -68,7 +72,7 @@ Changelog = "https://github.com/AryanKumar1401/importguard/releases"
 packages = ["src/importguard"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 100
 src = ["src", "tests"]
 
@@ -91,12 +95,13 @@ ignore = [
 known-first-party = ["importguard"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 files = ["src/importguard"]
+exclude = ["src/importguard/_probe\\.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -114,3 +119,7 @@ exclude_lines = [
     "raise NotImplementedError",
 ]
 
+
+# importguard checks itself in CI (on Python 3.13, matching importguard.lock).
+[tool.importguard]
+entrypoints = ["importguard", "importguard.cli"]

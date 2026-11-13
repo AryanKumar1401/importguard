@@ -1,455 +1,199 @@
 # importguard
 
-**Measure and enforce import-time behavior in Python projects.**
-
-Stop slow imports and sneaky side effects from shipping to production.
-
----
-
-## The Problem
-
-Python imports can quietly become a performance and reliability trap:
-
-- **Slow startup** — Your CLI or server cold-start gets slower because importing your package pulls in heavy modules (`pandas`, `torch`, `boto3`) or runs expensive initialization
-- **Hidden side effects** — Importing a module accidentally reads config, makes network calls, hits the filesystem, or initializes logging globally
-- **Hard to catch in review** — These regressions are subtle and often only noticed when users complain
-
-**importguard** makes these issues measurable and CI-enforceable.
-
----
-
-## Installation
+**A pull-request report of what a change adds to your Python program's startup, and why.**
 
 ```bash
 pip install importguardpy
+importguard diff
 ```
+
+One added `import`, three modules deep, can pull hundreds of modules into your CLI's or service's startup. It can also add a network call or a subprocess that now runs on every launch. None of that shows up in the diff a reviewer reads. importguard runs the import before and after the change and reports, on the pull request:
+
+- every **new package at startup**, with the chain of imports that pulled it in and the line in *your* code to change;
+- **forbidden modules** (`forbid = ["pandas"]`), even when they arrive through a dependency;
+- **side effects at import time**: network, subprocess, file writes, environment changes, threads.
+
+There's nothing to set up: no config, no lockfile, no baseline. Problems that already exist on your main branch aren't reported, so the first run is quiet.
 
 ---
 
-## Quick Start
+## What a pull request sees
 
-### Check import time for any module
+The GitHub Action keeps one comment on the PR up to date:
 
-```bash
-$ importguard check requests
+> ### :x: importguard diff
+>
+> Compared with `adb7d13f6c` (merge-base of HEAD and main).
+>
+> | entrypoint | status | modules | time |
+> |---|---|---|---|
+> | `demoapp.cli` | fail | 103 (base 77) | 32ms |
+>
+> :warning: **demoapp.cli**: new third-party package at startup: bigdep (+20 modules, ~9ms); also pulls in stdlib: sqlite3, json, csv, http, socket, …
+> ```
+> src/demoapp/cli.py:2 -> demoapp.report
+> src/demoapp/report.py:5 -> bigdep
+> ```
+> - defer the import at src/demoapp/report.py:5 - mark it `lazy` (Python 3.15+), list it in `__lazy_modules__`, or move it into the function that uses it
+>   `lazy import bigdep`
+> - if this is intended, a maintainer approves it outside this change: label the pull request `importguard:allow:bigdep` …
+>
+> :x: **demoapp.cli**: network access during import in demoapp.telemetry (src/demoapp/telemetry.py:3): socket.getaddrinfo 127.0.0.1:9
+> ```
+> src/demoapp/cli.py:8 -> demoapp.telemetry
+> ```
+> - move this out of module scope in demoapp.telemetry (e.g. into a function called explicitly or on first use)
 
-✓ requests imported in 45ms
+**By default it reports and does not gate.** A new startup package is a ⚠️ warning on the PR, so the reviewer answers one question: "this adds `bigdep` to CLI startup through `report.py:5`. Intended?" Only rules you set fail the check:
 
-Top 5 slowest imports:
-  1. urllib3.util.ssl_     12ms
-  2. urllib3.util          8ms
-  3. requests.adapters     7ms
-  4. charset_normalizer    6ms
-  5. requests.models       5ms
-```
+- `forbid` lists;
+- network or subprocess calls at import time;
+- `new_packages = "error"`, if you want new dependencies at startup to need explicit approval.
 
-### Enforce a time budget
+In practice it stays quiet. Replayed over the last 50 commits of httpie, black, mkdocs, pre-commit and cookiecutter (250 commits), it raised **no false alarms**, and runs took under a second each (median). Startup regressions are rare, so the report is meant to cost you almost nothing until the day one lands.
 
-```bash
-$ importguard check mypkg --max-ms 200
-
-✓ mypkg imported in 127ms (budget: 200ms)
-```
-
-```bash
-$ importguard check mypkg --max-ms 100
-
-✗ FAIL: mypkg imported in 127ms (budget: 100ms)
-```
-
-### Ban imports at the top level
-
-```bash
-$ importguard check mypkg.cli --ban pandas --ban torch
-
-✗ FAIL: mypkg.cli imports banned module: pandas
-```
-
-### Get reliable timing with --repeat
-
-Import timing can be noisy. Use `--repeat` to run multiple times and report the median:
-
-```bash
-$ importguard check mypkg --max-ms 150 --repeat 5
-
-Running 5 iterations...
-✓ mypkg imported in 127ms (median of 5 runs: 118ms, 127ms, 132ms, 124ms, 129ms)
-```
-
-This is especially useful in CI where timing variance can cause flaky failures.
-
-### Pin Python interpreter with --python
-
-Useful for testing against specific Python versions or when using pyenv/virtualenvs in CI:
-
-```bash
-$ importguard check mypkg --python /usr/local/bin/python3.11 --max-ms 200
-
-✓ mypkg imported in 134ms (using Python 3.11.7)
-```
-
----
-
-## Configuration
-
-Create `.importguard.toml` in your project root:
-
-```toml
-[importguard]
-# Global budget for the main package
-max_total_ms = 200
-
-# Per-module budgets
-[importguard.budgets]
-"mypkg" = 150
-"mypkg.cli" = 100
-"mypkg.api" = 80
-
-# Banned top-level imports per module
-[importguard.banned]
-"mypkg.cli" = ["pandas", "numpy", "torch"]
-"mypkg" = ["boto3", "tensorflow"]
-```
-
-Then run:
-
-```bash
-$ importguard check mypkg --config .importguard.toml
-```
-
----
-
-## CLI Reference
-
-```
-importguard check <module> [options]
-
-Arguments:
-  module              Python module to check (e.g., mypkg, mypkg.cli)
-
-Options:
-  --max-ms MS         Fail if import exceeds this threshold
-  --ban MODULE        Ban a module from being imported (can repeat)
-  --config FILE       Path to .importguard.toml config file
-  --top N             Show top N slowest imports (default: 10)
-  --json              Output results as JSON (for CI parsing)
-  --quiet             Only output on failure
-  --fail-on-warning   Exit non-zero on warnings, not just errors
-  --repeat K          Run K times in fresh subprocesses, report median (reduces noise)
-  --python PATH       Use specific Python interpreter (e.g., /usr/bin/python3.11)
-```
-
----
-
-## CI Integration
-
-### GitHub Actions
+## Set it up on GitHub
 
 ```yaml
-name: Import Guard
-
-on: [push, pull_request]
-
+# .github/workflows/importguard.yml
+on:
+  pull_request:
+    # labeled/unlabeled re-run the report when a maintainer adds an approval label
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+permissions:
+  contents: read
+  pull-requests: write   # to keep the PR comment up to date
 jobs:
-  import-check:
+  importguard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          pip install -e .
-          pip install importguardpy
-      
-      - name: Check import performance
-        run: |
-          importguard check mypkg --config .importguard.toml --fail-on-warning --repeat 3
+        with: { fetch-depth: 0 }            # history for the merge-base
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -e .               # your project, with its dependencies
+      - uses: AryanKumar1401/importguard@main
 ```
 
-**CI Best Practices:**
-- Use `--repeat 3` or `--repeat 5` to reduce timing noise and prevent flaky failures
-- Use `--python $(which python)` to explicitly control which interpreter is tested
-- Each repeat runs in a fresh subprocess to avoid caching effects
+The action:
+- compares the PR with its merge-base;
+- writes the report to the job summary;
+- keeps one PR comment updated (`comment: false` to turn that off);
+- fails the job only on errors (`args: --strict` to fail on warnings too).
 
-### Pre-commit Hook
+If it can't comment, for example on a fork PR with a read-only token, it warns and carries on.
 
-```yaml
-# .pre-commit-config.yaml
-repos:
-  - repo: local
-    hooks:
-      - id: importguard
-        name: importguard
-        entry: importguard check mypkg --max-ms 200
-        language: system
-        pass_filenames: false
-        always_run: true
-```
+Locally, or in any other CI, `importguard diff` does the same against `origin/HEAD`, `main` or `master`, or `--base REF`. `--format markdown` prints the comment and `--json` prints a versioned report.
 
----
+## Who decides what is acceptable
 
-## Why Results Differ on CI?
+When agents write much of the code, a check is only useful if the change it judges can't adjust the check. `diff` keeps everything that decides the verdict outside the change:
 
-Import times can vary significantly between your local machine and CI. Here's why and how to handle it:
+- **The baseline is the merge-base commit**, checked out into a temporary git worktree and probed with the same interpreter. Nothing is stored in the repository, so there is nothing to regenerate.
+- **The policy comes from the base too.** That covers `forbid`, `allow`, severities, and the `python`, `pythonpath` and `timeout` used to run the probe. If the base has no `[tool.importguard]`, the defaults apply, never the change's own config. A change that edits the policy gets a `policy_changed` finding, and the edit takes effect after it's reviewed and merged.
+- **Approval happens outside the diff.** It comes from a maintainer's PR label (`importguard:allow:<package>`, or `importguard:approved` for everything), `--allow` / `IMPORTGUARD_ALLOW` in CI, or `allow` on the base branch. A suggested fix never includes a command an agent could run to approve itself.
+- **Entrypoints are the union of base and head**, so deleting one from the config doesn't hide it.
+- **An entrypoint the base cannot import** (new in the change) is compared with what the base's other entrypoints load. If the base fails only because the change removed a third-party dependency, that module is stubbed out on the base and the report says so.
 
-### Common Causes
+Labels are only as trustworthy as whoever can set them. If agents run with a token that can label PRs, put approvals in `allow` on the protected base branch instead.
 
-| Factor | Local | CI | Impact |
-|--------|-------|-----|--------|
-| **CPU** | Fast desktop/laptop | Shared VM cores | 2-5x slower |
-| **Disk** | SSD/NVMe | Network storage | Variable latency |
-| **Caching** | Warm `.pyc` files | Cold start | First run slower |
-| **Python version** | May differ | Matrix testing | Different stdlib |
-| **Dependencies** | Pinned versions | Fresh install | Version variance |
+**What it does not protect against:** the probe runs inside the interpreter it measures. Code written specifically to deceive it, such as rewriting the probe's state or faking its output, can succeed. Such code stands out in review. importguard guards against accidental regressions and casual workarounds; it is not a sandbox.
 
-### Recommendations
+## Configuration
 
-1. **Use `--repeat 3` or `--repeat 5`** — Takes median to smooth out noise
-2. **Set CI budgets 2-3x higher** than local measurements
-3. **Use separate config sections** for CI vs local:
+Everything is optional. Without configuration, entrypoints are inferred from `[project.scripts]` and your package name.
 
 ```toml
-# .importguard.toml
-[importguard]
-max_total_ms = 200  # Local development
+# pyproject.toml (diff reads this from the base commit)
+[tool.importguard]
+entrypoints = ["mypkg", "mypkg.cli"]
+forbid = ["pandas", "torch"]                    # never at startup, even transitively
+allow = ["rich"]                                # approved third-party packages
+forbid_effects = ["network", "subprocess"]      # default; file_write, env and thread warn
+new_packages = "warning"                        # default; "error" to require approval
+new_stdlib = "info"
+new_first_party = "info"
+max_ms = 300                                    # advisory: a warning, never a failure...
+strict_time = false                             # ...unless you opt in
+# python = ".venv/bin/python"                   # interpreter to probe with
+# pythonpath = ["src"]                          # default: src/ if it exists
 
-# Override in CI with environment-specific config
-# or use: importguard check mypkg --max-ms 500
+[tool.importguard.entrypoint."mypkg.cli"]       # per-entrypoint overrides
+forbid = ["boto3"]                              # added to the global list
 ```
 
-4. **Pin Python version** in CI to match local:
+**Why module sets and not milliseconds:** wall-clock import time on shared CI runners varies by tens of percent between identical runs, so a millisecond threshold either flakes or is too loose to catch anything. The set of modules an entrypoint loads is deterministic. importguard reports time as context and judges by what loads.
 
-```yaml
-- uses: actions/setup-python@v5
-  with:
-    python-version: '3.11.7'  # Exact version
+## Commands
+
+| command | what it does |
+|---|---|
+| `importguard diff [ENTRY...]` | **The report.** What the working tree adds to startup vs. its merge-base (`--base REF`, `--allow PKG`, `--strict`) |
+| `importguard why ENTRY MODULE` | The import chain from `ENTRY` to `MODULE`, with file:line for each hop |
+| `importguard show ENTRY` | Modules an entrypoint loads, by cumulative cost (`--kind third_party`, `--all`) |
+| `importguard effects [ENTRY...]` | Side effects performed during import |
+| `importguard snapshot` / `check` | Lockfile mode (below) |
+| `importguard schema` | JSON Schema of `--json` output |
+
+Common options: `--json` / `--format {text,json,markdown}`, `--python PATH`, `--config PATH`, `-q`.
+
+Exit codes: `0` ok · `1` errors (or warnings with `--strict`) · `2` usage/config error · `3` tool error.
+
+### Lockfile mode
+
+`diff` compares two commits in one environment, so it can't see a dependency *upgrade* that starts importing something new. To cover that, record what each entrypoint loads and compare against it:
+
+```console
+$ importguard snapshot     # writes importguard.lock; commit it
+$ importguard check        # compares with the lock; check --changed re-probes only affected entrypoints
 ```
 
-5. **Warm up before measuring** (optional):
+The lockfile lives in the repository, so a change can rewrite it. Protect it with CODEOWNERS and keep `diff` as the PR report.
 
-```yaml
-- name: Warm up Python cache
-  run: python -c "import mypkg" || true
+## For coding agents
 
-- name: Check import performance  
-  run: importguard check mypkg --repeat 3
-```
+- `importguard diff --json` gives a versioned report (`importguard schema`). Each finding has:
+  - a stable `id`;
+  - the import `chain` with file:line for each hop;
+  - typed `remedies` (`defer_import` with the exact `replacement`, `request_approval`, `investigate`).
+- It's deterministic, needs no setup, and judges the change from outside it. An agent gets to green by fixing the import, not by editing the config.
 
-### Debugging CI Failures
+See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code Stop hook that runs `importguard diff` before an agent finishes its turn.
+
+## How it works
+
+`importguard` launches your interpreter with `-X importtime` and a small stdlib-only probe script. Before importing the entrypoint, the probe installs:
+
+- a `sys.meta_path` observer, which records each module the first time it is imported, together with the frame (file, line, importing module) that asked for it;
+- a `sys.addaudithook` hook, which records network, subprocess, file-write, environment and thread events and attributes each to the module whose top-level code was running.
+
+It also:
+- flags project code that runs at interpreter startup (`sitecustomize`, `.pth` files);
+- confirms which modules really loaded, so deleting one from `sys.modules` doesn't hide it;
+- treats git-ignored or vendored code inside the project as third-party;
+- compares namespace packages by distribution (`google.cloud.bigquery`, not `google`);
+- ignores bytecode-cache writes and Cython's bookkeeping modules.
+
+The probe executes your code. Treat untrusted repositories as you would when running their tests: in a sandbox.
+
+## How it fits with other tools
+
+| tool | relationship |
+|---|---|
+| Ruff (`TID251`/`TID253`, lazy-import rules), flake8-lazy | Static checks of your own source; use them alongside. importguard sees imports that arrive through dependencies, and runtime side effects. |
+| [importcost](https://pypi.org/project/importcost/) | Measures import cost, and its `audit`/`apply` make imports lazy (PEP 810) by running your tests. **To migrate to `lazy import`, use importcost**; importguard reports what each PR adds. |
+| tuna, importtime-waterfall | Visualise one `-X importtime` run. `importguard show` and `why` answer the same questions in CI or from an agent. |
+| import-linter | Architecture contracts between your own packages, checked statically. |
+
+## Development
 
 ```bash
-# Get detailed JSON output for investigation
-importguard check mypkg --json > import-report.json
-
-# Compare top imports between local and CI
-importguard check mypkg --top 20
-```
-
----
-
-## How to Keep Imports Fast
-
-### 1. Lazy Imports
-
-Move heavy imports inside functions that need them:
-
-```python
-# ❌ Bad: imports pandas at module load
-import pandas as pd
-
-def process_data(path):
-    return pd.read_csv(path)
-
-# ✅ Good: imports pandas only when needed
-def process_data(path):
-    import pandas as pd
-    return pd.read_csv(path)
-```
-
-### 2. Optional Dependencies
-
-Use try/except for optional heavy dependencies:
-
-```python
-# ✅ Good: graceful degradation
-try:
-    import torch
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
-
-def train_model(data):
-    if not HAS_TORCH:
-        raise ImportError("torch required: pip install mypkg[ml]")
-    # ... use torch
-```
-
-### 3. Deferred Imports with `__getattr__`
-
-For library authors, use module-level `__getattr__`:
-
-```python
-# mypkg/__init__.py
-def __getattr__(name):
-    if name == "heavy_module":
-        from . import heavy_module
-        return heavy_module
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-```
-
-### 4. Split Entry Points
-
-Separate your CLI from your library:
-
-```
-mypkg/
-├── __init__.py      # Lightweight, fast to import
-├── core.py          # Core functionality
-├── cli.py           # CLI-only, can import Click/Rich
-└── optional/
-    └── ml.py        # Heavy ML dependencies
-```
-
-```toml
-# pyproject.toml
-[project.scripts]
-mypkg = "mypkg.cli:main"  # CLI imports heavy deps
-```
-
-### 5. Avoid Import Side Effects
-
-```python
-# ❌ Bad: runs on import
-config = load_config()  # Network call!
-logger = setup_logging()  # Creates files!
-
-# ✅ Good: explicit initialization
-_config = None
-def get_config():
-    global _config
-    if _config is None:
-        _config = load_config()
-    return _config
-```
-
-### 6. Profile Before Optimizing
-
-Use importguard to find the actual culprits:
-
-```bash
-# Find the slowest imports
-importguard check mypkg --top 20
-
-# Ban known-heavy modules from your fast path
-importguard check mypkg.cli --ban pandas --ban torch --ban tensorflow
-```
-
----
-
-## Python API
-
-```python
-from importguard import check_import, ImportResult
-
-# Basic timing
-result: ImportResult = check_import("mypkg")
-print(f"Import took {result.total_ms:.1f}ms")
-
-# Check against rules
-result = check_import(
-    "mypkg.cli",
-    max_ms=100,
-    banned=["pandas", "torch"]
-)
-
-if not result.passed:
-    for violation in result.violations:
-        print(f"FAIL: {violation}")
-
-# Reduce noise with repeated measurements
-result = check_import(
-    "mypkg",
-    repeat=5,  # Run 5 times, report median
-    max_ms=150
-)
-print(f"Median: {result.median_ms:.1f}ms across {result.num_runs} runs")
-
-# Use specific Python interpreter
-result = check_import(
-    "mypkg",
-    python_path="/usr/local/bin/python3.11"
-)
-```
-
----
-
-## How It Works
-
-importguard uses Python's `-X importtime` flag to capture detailed timing data for every module imported during the load of your target module. It then:
-
-1. Parses the import tree and timing data
-2. Identifies the slowest imports
-3. Checks for banned modules in the import chain
-4. Compares against your configured budgets
-5. Reports violations with actionable output
-
-All checks run in an isolated subprocess to avoid polluting your current environment.
-
----
-
-## Use Cases
-
-### CLI Startup Time
-Keep your CLI snappy. Users notice when `mycli --help` takes 2 seconds.
-
-### Library Hygiene  
-Ensure `import mypkg` doesn't force users to install or load optional heavy dependencies.
-
-### Serverless Cold Starts
-Lambda and Cloud Functions cold starts are dominated by import time. Catch regressions before they hit prod.
-
-### Monorepo Guardrails
-Prevent accidental cross-module imports that pull in the kitchen sink.
-
----
-
-## Roadmap
-
-- [x] Import timing measurement
-- [x] Time budget enforcement
-- [x] Banned import detection
-- [ ] Baseline comparison (diff vs main branch)
-- [ ] Side-effect detection (network calls, file writes during import)
-- [ ] HTML report generation
-- [ ] VS Code extension
-
----
-
-## Contributing
-
-Contributions welcome! Please open an issue first to discuss what you'd like to change.
-
-```bash
-git clone https://github.com/AryanKumar1401/importguard
-cd importguard
+git clone https://github.com/AryanKumar1401/importguard && cd importguard
 pip install -e ".[dev]"
 pytest
+ruff check src tests && mypy
 ```
-
----
 
 ## License
 
 MIT
-
----
-
-<p align="center">
-  <strong>importguard</strong> — unit tests, but for import behavior
-</p>
-
