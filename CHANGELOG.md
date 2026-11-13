@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-13
+
+### Changed
+- Shorter `action.yml` descriptions (under 125 characters), as the GitHub Marketplace requires. No code changes.
+
 ## [0.2.1] - 2026-11-13
 
 ### Added
@@ -90,6 +95,7 @@ millisecond thresholds. Nothing from 0.1 is kept.
 
 - Initial release: `importguard check <module>` with time budgets and banned imports.
 
+[0.2.2]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.2.2
 [0.2.1]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AryanKumar1401/importguard/releases/tag/v0.1.0
