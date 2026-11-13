@@ -33,6 +33,7 @@ millisecond thresholds. Nothing from 0.1 is kept.
   - new-package findings offer a `request_approval` remedy instead of a command the agent could run to approve itself.
 - `allow` policy key (approved third-party packages).
 - The GitHub Action runs `diff` by default (`mode: check` for lockfile mode).
+- **Comments on pull requests from forks.** Their token is read-only, so the Action uploads the report instead. A new `comment` sub-action (`AryanKumar1401/importguard/comment@main`), run from a `workflow_run` workflow, posts it without ever running the PR's code. The uploaded report is treated as untrusted: it is only posted to the PR whose head is the commit that was tested, the body is size-capped, and @mentions are defused.
 - **Probe engine**: imports each entrypoint in a fresh interpreter and records:
   - every module loaded, with the importing module, file and line (`sys.meta_path` observer);
   - side effects during import (network, subprocess, file writes, environment, threads) via audit hooks, attributed to the module whose top-level code ran them.

@@ -29,7 +29,7 @@ inputs:
     required: false
     default: python
   comment:
-    description: "Keep one PR comment updated with the report (needs `pull-requests: write`; warns and carries on without it)."
+    description: "Keep one PR comment updated with the report (needs `pull-requests: write`; warns and carries on without it). On fork PRs the report is uploaded for the importguard-comment workflow instead."
     required: false
     default: "true"
   github-token:
@@ -98,28 +98,46 @@ runs:
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
     - name: Comment on pull request
-      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      # Same-repository PRs: the job's token can comment directly.
+      if: >-
+        inputs.comment == 'true' && github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
         AUTHOR: ${{ inputs.comment-author }}
+        BODY_FILE: ${{ runner.temp }}/importguard.md
+      run: bash "${{ github.action_path }}/scripts/post-comment.sh"
+
+    - name: Prepare report for the comment workflow
+      # Fork PRs get a read-only token, so commenting here cannot work. Hand the
+      # report to the importguard-comment workflow (workflow_run), which runs
+      # trusted code with a write token and never executes the PR's code.
+      if: >-
+        inputs.comment == 'true' && github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name != github.repository
+      shell: bash
+      env:
+        PR: ${{ github.event.pull_request.number }}
+        OUT: ${{ runner.temp }}/importguard-report
       run: |
-        # Commenting is best effort: a read-only token (fork PRs) or an API error
-        # must not change the check's verdict.
-        body="$RUNNER_TEMP/importguard-comment.md"
-        { echo "<!-- importguard -->"; cat "$RUNNER_TEMP/importguard.md"; } > "$body"
-        id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq ".[] | select(.user.login == \"$AUTHOR\" and (.body | startswith(\"<!-- importguard -->\"))) | .id" \
-          2>/dev/null | head -n 1) || id=""
-        if [ -n "$id" ]; then
-          gh api -X PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" > /dev/null \
-            || echo "::warning::importguard could not update its PR comment. Give the job 'permissions: pull-requests: write'. On pull requests from forks the token is always read-only; the report is in the job summary."
-        else
-          gh api "repos/$REPO/issues/$PR/comments" -F "body=@$body" > /dev/null \
-            || echo "::warning::importguard could not post a PR comment. Give the job 'permissions: pull-requests: write'. On pull requests from forks the token is always read-only; the report is in the job summary."
-        fi
+        mkdir -p "$OUT"
+        cp "$RUNNER_TEMP/importguard.md" "$OUT/report.md"
+        echo "$PR" > "$OUT/pr.txt"
+        echo "::notice::importguard: fork PR, so the report is uploaded for the importguard-comment workflow to post (see the README). It is also in this job's summary."
+
+    - name: Upload report for the comment workflow
+      if: >-
+        inputs.comment == 'true' && github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name != github.repository
+      uses: actions/upload-artifact@v4
+      with:
+        name: importguard-report
+        path: ${{ runner.temp }}/importguard-report
+        retention-days: 7
+        overwrite: true
 
     - name: Fail on violations
       shell: bash

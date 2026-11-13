@@ -81,7 +81,36 @@ The action:
 - keeps one PR comment updated (`comment: false` to turn that off);
 - fails the job only on errors (`args: --strict` to fail on warnings too).
 
-If it can't comment, for example on a fork PR with a read-only token, it warns and carries on.
+If it can't comment, it warns and carries on.
+
+### Pull requests from forks
+
+On a PR from a fork, GitHub gives the workflow a read-only token, so the action can't comment there. Instead it uploads the report, and a second workflow posts it:
+
+```yaml
+# .github/workflows/importguard-comment.yml
+name: importguard comment
+on:
+  workflow_run:
+    workflows: [importguard]          # the name of the workflow that runs the action
+    types: [completed]
+permissions:
+  actions: read                       # to download the report
+  pull-requests: write                # to comment
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: AryanKumar1401/importguard/comment@main
+```
+
+`workflow_run` always runs this file from your default branch, with a write token. It downloads the report the PR's run uploaded and never checks out or runs the PR's code. The report comes from a run the fork controls, so it is handled as untrusted data:
+- the comment goes only to the PR whose head is the commit that run tested;
+- the body is size-capped;
+- `@mentions` are defused.
+
+Don't use `pull_request_target` to get a write token instead. importguard executes the code it checks, so that would hand the token to whoever opened the PR.
 
 Locally, or in any other CI, `importguard diff` does the same against `origin/HEAD`, `main` or `master`, or `--base REF`. `--format markdown` prints the comment and `--json` prints a versioned report.
 
