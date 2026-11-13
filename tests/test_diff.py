@@ -217,3 +217,9 @@ def test_new_config_cannot_approve_itself(repo):
     assert kinds["new_package"]["severity"] == "warning"
     assert kinds["policy_changed"]["severity"] == "info"  # adoption, applies after merge
     assert report["data"]["policy_source"] == "base (defaults)"
+
+
+def test_full_sha_base_is_shortened_in_the_label(repo):
+    sha = git(repo, "rev-parse", "HEAD").strip()
+    _, report = repo.run_json("diff", "--base", sha)
+    assert report["data"]["base"]["ref"] == f"merge-base of HEAD and {sha[:10]}"
