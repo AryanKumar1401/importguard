@@ -16,7 +16,7 @@ All notable changes to this project are documented here. The format follows
 - `diff` reported one finding per import statement, so a change that added `import rich` and `from rich.console import Console` showed the same package two or three times (found replaying Typer's history). Findings for the same third-party packages are now merged into one, which lists every import site and gives a single fix: defer all of them.
 
 ### Changed
-- Releases publish from a pushed `v*` tag, which also creates the GitHub release with the changelog notes.
+- Releases publish from a pushed `v*` tag, or from a manual run of the publish workflow on `main` (which creates the tag). Either way the GitHub release is created with the changelog notes.
 
 ## [0.2.0] - 2026-11-13
 
