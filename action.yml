@@ -115,10 +115,10 @@ runs:
           2>/dev/null | head -n 1) || id=""
         if [ -n "$id" ]; then
           gh api -X PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" > /dev/null \
-            || echo "::warning::importguard could not update its PR comment"
+            || echo "::warning::importguard could not update its PR comment. Give the job 'permissions: pull-requests: write'. On pull requests from forks the token is always read-only; the report is in the job summary."
         else
           gh api "repos/$REPO/issues/$PR/comments" -F "body=@$body" > /dev/null \
-            || echo "::warning::importguard could not post a PR comment (read-only token on a fork?)"
+            || echo "::warning::importguard could not post a PR comment. Give the job 'permissions: pull-requests: write'. On pull requests from forks the token is always read-only; the report is in the job summary."
         fi
 
     - name: Fail on violations
