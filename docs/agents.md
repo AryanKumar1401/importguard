@@ -13,6 +13,18 @@ Coding agents add imports and dependencies quickly, and the startup cost hides i
 - `importguard schema` prints the JSON Schema of the report.
 - `importguard why <entrypoint> <module>` answers "how did this get imported?" in one call.
 
+## Claude skill
+
+[`skills/importguard/SKILL.md`](../skills/importguard/SKILL.md) is a Claude skill that covers all of this: when to run `importguard diff`, how to read findings and apply the fixes (in a form valid for the project's Python versions), and when to hand a new startup dependency to a human instead of silencing the check. Claude loads it whenever a task touches imports in a Python project. Install it per project or for every project:
+
+```bash
+mkdir -p .claude/skills/importguard        # or ~/.claude/skills/importguard
+curl -fsSL https://raw.githubusercontent.com/AryanKumar1401/importguard/main/skills/importguard/SKILL.md \
+  -o .claude/skills/importguard/SKILL.md
+```
+
+Its test cases live in `skills/importguard/evals/`, in the layout `claude plugin eval` reads.
+
 ## AGENTS.md / CLAUDE.md snippet
 
 ```markdown

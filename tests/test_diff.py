@@ -223,3 +223,19 @@ def test_full_sha_base_is_shortened_in_the_label(repo):
     sha = git(repo, "rev-parse", "HEAD").strip()
     _, report = repo.run_json("diff", "--base", sha)
     assert report["data"]["base"]["ref"] == f"merge-base of HEAD and {sha[:10]}"
+
+
+def test_relative_python_path_is_used_for_base_and_head(repo):
+    # Found building the agent skill: `--python .venv/bin/python` resolved
+    # inside the temporary base checkout, where the (git-ignored) venv does
+    # not exist, so the base probe could not start.
+    import os
+    import sys
+
+    repo.write(".gitignore", ".venv/\n")
+    commit(repo, "ignore venv")
+    (repo.root / ".venv" / "bin").mkdir(parents=True)
+    os.symlink(sys.executable, repo.root / ".venv" / "bin" / "python")
+    code, report = repo.run_json("diff", "app.cli", "--python", ".venv/bin/python")
+    assert code == 0, report["tool_error"]
+    assert report["entrypoints"][0]["status"] == "pass"

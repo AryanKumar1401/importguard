@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Claude skill** (`skills/importguard/SKILL.md`): it teaches Claude when to run `importguard diff`, how to apply its fixes (in a form valid for the project's Python versions), and when to hand a new startup dependency to a maintainer instead of silencing the check. Test cases are in `skills/importguard/evals/`.
+
+### Fixed
+- `--python` given as a relative path (e.g. `.venv/bin/python`) now works with `diff`. It was looked up inside the temporary base checkout, where the virtualenv doesn't exist. A relative `python` in `[tool.importguard]` is resolved against the project root.
+
 ## [0.2.0] - 2026-11-13
 
 A redesign around one job: a pull-request report of what a change adds to your
