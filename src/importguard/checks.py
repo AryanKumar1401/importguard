@@ -165,10 +165,36 @@ def _lock_diff(
         else:
             groups[key] = (root_mod, group)
 
+    def new_ancestor(name: str) -> str | None:
+        parts = name.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            candidate = ".".join(parts[:i])
+            if candidate in new:
+                return candidate
+        return None
+
+    deferred: list[Module] = []
     for m in result.modules:
         if m.name not in new or m.name in claimed or (m.parent and m.parent in new):
             continue
+        if not m.parent and new_ancestor(m.name):
+            # Registered without an import statement (e.g. by its package's C
+            # init, like math.integer or os.path): belongs with that package.
+            deferred.append(m)
+            continue
         take(m, _group_key(m, index))
+    for m in deferred:
+        if m.name in claimed:
+            continue
+        ancestor = new_ancestor(m.name)
+        home = next(
+            (k for k, (_, ms) in groups.items() if any(x.name == ancestor for x in ms)), None
+        )
+        if home is None:
+            take(m, _group_key(m, index))
+        else:
+            claimed.add(m.name)
+            groups[home][1].append(m)
     for m in result.modules:
         # Never reachable from a root (e.g. parents forming a cycle): still report.
         if m.name in new and m.name not in claimed:
