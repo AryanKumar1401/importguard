@@ -72,7 +72,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
       - run: pip install -e .               # your project, with its dependencies
-      - uses: AryanKumar1401/importguard@main
+      - uses: AryanKumar1401/importguard@v0.2.0
 ```
 
 The action:
@@ -102,7 +102,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: AryanKumar1401/importguard/comment@main
+      - uses: AryanKumar1401/importguard/comment@v0.2.0
 ```
 
 `workflow_run` always runs this file from your default branch, with a write token. It downloads the report the PR's run uploaded and never checks out or runs the PR's code. The report comes from a run the fork controls, so it is handled as untrusted data:
