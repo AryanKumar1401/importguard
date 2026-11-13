@@ -1,5 +1,10 @@
 # importguard
 
+[![PyPI](https://img.shields.io/pypi/v/importguardpy)](https://pypi.org/project/importguardpy/)
+[![Python](https://img.shields.io/pypi/pyversions/importguardpy)](https://pypi.org/project/importguardpy/)
+[![CI](https://github.com/AryanKumar1401/importguard/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanKumar1401/importguard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **A pull-request report of what a change adds to your Python program's startup, and why.**
 
 ```bash
@@ -7,55 +12,37 @@ pip install importguardpy
 importguard diff
 ```
 
-One added `import`, three modules deep, can pull hundreds of modules into your CLI's or service's startup. It can also add a network call or a subprocess that now runs on every launch. None of that shows up in the diff a reviewer reads. importguard runs the import before and after the change and reports, on the pull request:
+One added `import`, three modules deep, can pull hundreds of modules into your CLI's or service's startup. It can also add a network call or a subprocess that now runs on every launch. None of that shows up in the diff a reviewer reads. importguard imports your entrypoints before and after the change and reports:
 
 - every **new package at startup**, with the chain of imports that pulled it in and the line in *your* code to change;
 - **forbidden modules** (`forbid = ["pandas"]`), even when they arrive through a dependency;
 - **side effects at import time**: network, subprocess, file writes, environment changes, threads.
 
-There's nothing to set up: no config, no lockfile, no baseline. Problems that already exist on your main branch aren't reported, so the first run is quiet.
+There's nothing to set up: no config, no lockfile, no baseline. Problems that already exist on your main branch aren't reported, so the first run is quiet. Python 3.10+ on Linux, macOS and Windows.
 
----
+## Caught in real history
 
-## What a pull request sees
+In 2022, [Typer](https://github.com/fastapi/typer) started importing `rich` at the top of `typer/main.py`, and `import typer` went from 81 to 170 modules. Running `importguard diff` on that commit:
 
-The GitHub Action keeps one comment on the PR up to date:
+```
+warning  new third-party packages at startup: rich, pygments (+87 modules, ~34ms); imported by 3 statements
+         typer/__init__.py:30 → typer.main
+         typer/main.py:39     → rich
+         fix: defer all 3 imports (`lazy` on Python 3.15+, `__lazy_modules__`, or move each into the function that uses it):
+               typer/main.py:39  lazy import rich
+               typer/main.py:40  lazy from rich.console import Console
+               typer/main.py:41  lazy from rich.traceback import Traceback
+```
 
-> ### :x: importguard diff
->
-> Compared with `adb7d13f6c` (merge-base of HEAD and main).
->
-> | entrypoint | status | modules | time |
-> |---|---|---|---|
-> | `demoapp.cli` | fail | 103 (base 77) | 32ms |
->
-> :warning: **demoapp.cli**: new third-party package at startup: bigdep (+20 modules, ~9ms); also pulls in stdlib: sqlite3, json, csv, http, socket, …
-> ```
-> src/demoapp/cli.py:2 -> demoapp.report
-> src/demoapp/report.py:5 -> bigdep
-> ```
-> - defer the import at src/demoapp/report.py:5 - mark it `lazy` (Python 3.15+), list it in `__lazy_modules__`, or move it into the function that uses it
->   `lazy import bigdep`
-> - if this is intended, a maintainer approves it outside this change: label the pull request `importguard:allow:bigdep` …
->
-> :x: **demoapp.cli**: network access during import in demoapp.telemetry (src/demoapp/telemetry.py:3): socket.getaddrinfo 127.0.0.1:9
-> ```
-> src/demoapp/cli.py:8 -> demoapp.telemetry
-> ```
-> - move this out of module scope in demoapp.telemetry (e.g. into a function called explicitly or on first use)
+On the commit that later fixed it, the same command reports `pygments`, `markdown_it` and `mdurl` as removed from startup (253 → 92 modules).
 
-**By default it reports and does not gate.** A new startup package is a ⚠️ warning on the PR, so the reviewer answers one question: "this adds `bigdep` to CLI startup through `report.py:5`. Intended?" Only rules you set fail the check:
+It is also quiet when nothing changed: replayed over the last 50 commits of httpie, black, mkdocs, pre-commit and cookiecutter (250 commits), it raised **no false alarms**, with a median run under a second.
 
-- `forbid` lists;
-- network or subprocess calls at import time;
-- `new_packages = "error"`, if you want new dependencies at startup to need explicit approval.
-
-In practice it stays quiet. Replayed over the last 50 commits of httpie, black, mkdocs, pre-commit and cookiecutter (250 commits), it raised **no false alarms**, and runs took under a second each (median). Startup regressions are rare, so the report is meant to cost you almost nothing until the day one lands.
-
-## Set it up on GitHub
+## Add it to a repository
 
 ```yaml
 # .github/workflows/importguard.yml
+name: importguard   # the fork-comment workflow below refers to this name
 on:
   pull_request:
     # labeled/unlabeled re-run the report when a maintainer adds an approval label
@@ -74,6 +61,8 @@ jobs:
       - run: pip install -e .               # your project, with its dependencies
       - uses: AryanKumar1401/importguard@v0.2.1
 ```
+
+It needs no config file, and by default it can't break your CI: a new startup package is a warning, and only the rules listed under "What a pull request sees" fail the job.
 
 The action:
 - compares the PR with its merge-base;
@@ -113,6 +102,39 @@ jobs:
 Don't use `pull_request_target` to get a write token instead. importguard executes the code it checks, so that would hand the token to whoever opened the PR.
 
 Locally, or in any other CI, `importguard diff` does the same against `origin/HEAD`, `main` or `master`, or `--base REF`. `--format markdown` prints the comment and `--json` prints a versioned report.
+
+## What a pull request sees
+
+The GitHub Action keeps one comment on the PR up to date:
+
+> ### :x: importguard diff
+>
+> Compared with `adb7d13f6c` (merge-base of HEAD and main).
+>
+> | entrypoint | status | modules | time |
+> |---|---|---|---|
+> | `demoapp.cli` | fail | 103 (base 77) | 32ms |
+>
+> :warning: **demoapp.cli**: new third-party package at startup: bigdep (+20 modules, ~9ms); also pulls in stdlib: sqlite3, json, csv, http, socket, …
+> ```
+> src/demoapp/cli.py:2 -> demoapp.report
+> src/demoapp/report.py:5 -> bigdep
+> ```
+> - defer the import at src/demoapp/report.py:5 - mark it `lazy` (Python 3.15+), list it in `__lazy_modules__`, or move it into the function that uses it
+>   `lazy import bigdep`
+> - if this is intended, a maintainer approves it outside this change: label the pull request `importguard:allow:bigdep` …
+>
+> :x: **demoapp.cli**: network access during import in demoapp.telemetry (src/demoapp/telemetry.py:3): socket.getaddrinfo 127.0.0.1:9
+> ```
+> src/demoapp/cli.py:8 -> demoapp.telemetry
+> ```
+> - move this out of module scope in demoapp.telemetry (e.g. into a function called explicitly or on first use)
+
+**By default it reports and does not gate.** A new startup package is a ⚠️ warning on the PR, so the reviewer answers one question: "this adds `bigdep` to CLI startup through `report.py:5`. Intended?" Only rules you set fail the check:
+
+- `forbid` lists;
+- network or subprocess calls at import time;
+- `new_packages = "error"`, if you want new dependencies at startup to need explicit approval.
 
 ## Who decides what is acceptable
 
