@@ -25,7 +25,7 @@ uvx --from importguardpy importguard diff --json --strict
 
 Things that matter for a correct result:
 
-- **Use the project's environment.** The probe imports the project's code, so it needs the project's dependencies. If the project has its own virtualenv, pass its interpreter as an absolute path, for example `--python "$PWD/.venv/bin/python"` (importguard 0.2.0 can't use a relative path for the base checkout). If you see `import_failed` with `ModuleNotFoundError` for a dependency the project declares, that's this problem, not a bug in the change.
+- **Use the project's environment.** The probe imports the project's code, so it needs the project's dependencies. If the project has its own virtualenv, pass its interpreter as an absolute path, for example `--python "$PWD/.venv/bin/python"` (importguard 0.2.0 needs it absolute; 0.2.1 and later also accept a relative path). If you see `import_failed` with `ModuleNotFoundError` for a dependency the project declares, that's this problem, not a bug in the change.
 - **Entrypoints** are inferred from `[project.scripts]` and the package name. If none are found (exit code 2, "no entrypoints"), pass the modules that matter, for example `importguard diff mypkg mypkg.cli --json --strict`.
 - **The base** is the merge-base with `origin/HEAD`, `main` or `master`. Pass `--base REF` if the branch is based on something else.
 - **`--strict`** makes warnings fail too. A new startup package is only a warning on PRs, but you should still deal with it before finishing.

@@ -278,3 +278,39 @@ def test_submodule_registered_by_its_parent_joins_that_finding(repo):
     assert [f["kind"] for f in report["findings"]] == ["new_package"], report["findings"]
     [f] = report["findings"]
     assert "json" in f["data"]["packages"]["stdlib"]
+
+
+def test_one_finding_per_new_package_across_statements(repo):
+    # Found replaying Typer's history (commit 252ed30): `import rich`,
+    # `from rich.console import Console` and `from rich.traceback import
+    # Traceback` on three lines gave three separate "new package: rich"
+    # findings for what reviewers see as one addition.
+    repo.dist("richlike/__init__.py", "")
+    repo.dist("richlike/console.py", "import json\nclass Console: pass\n")
+    repo.dist(
+        "richlike/traceback.py",
+        "import decimal\nfrom pyglike import lexers\nclass Traceback: pass\n",
+    )
+    repo.dist("pyglike/__init__.py", "")
+    repo.dist("pyglike/lexers.py", "")
+    repo.write(
+        "src/app/core.py",
+        "import richlike\nfrom richlike.console import Console\nfrom richlike.traceback import Traceback\n",
+    )
+    _, report = repo.run_json("diff", "app.cli")
+    news = [f for f in report["findings"] if f["kind"] == "new_package"]
+    assert len(news) == 1, [f["message"] for f in news]
+    [f] = news
+    assert f["data"]["packages"]["third_party"] == ["richlike", "pyglike"]
+    assert [(s["file"], s["line"]) for s in f["data"]["sites"]] == [
+        ("src/app/core.py", 1),
+        ("src/app/core.py", 2),
+        ("src/app/core.py", 3),
+    ]
+    defer = [r for r in f["remedies"] if r["kind"] == "defer_import"]
+    assert [r["line"] for r in defer] == [1, 2, 3]
+    assert [r["kind"] for r in f["remedies"]][-1] == "request_approval"
+    assert "imported by 3 statements" in f["message"]
+    _, md = repo.run("diff", "app.cli", "--format", "markdown")
+    assert "Imported at: `src/app/core.py:1`, `src/app/core.py:2`, `src/app/core.py:3`" in md
+    assert "importguard:allow:richlike" in md
