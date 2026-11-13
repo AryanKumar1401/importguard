@@ -1,0 +1,7 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "tablekit"
+version = "3.2.0"
+description = "Tables to CSV, TSV, SQLite and spreadsheets."

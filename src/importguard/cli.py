@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .checks import check_result
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, load_config, resolve_interpreter
 from .diffmode import allow_from_env, run_diff
 from .findings import (
     EXIT_TOOL_ERROR,
@@ -392,7 +392,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         # diff takes the interpreter from the CLI or the base commit, never the head.
-        python = args.python if args.command == "diff" else (args.python or config.python)
+        cli_python = resolve_interpreter(args.python, Path.cwd())
+        python = (
+            cli_python
+            if args.command == "diff"
+            else (cli_python or resolve_interpreter(config.python, config.root))
+        )
         report = COMMANDS[args.command](args, config, python)
     except (ConfigError, LockError) as exc:
         emit(Report(command=args.command, tool_error=str(exc)), args)

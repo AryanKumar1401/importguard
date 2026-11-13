@@ -1,0 +1,7 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "climate"
+version = "2.0.0"
+description = "Decorator-based CLI framework."

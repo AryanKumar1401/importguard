@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: defer-heavy-export-import
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  An `export` subcommand writes the notes to a CSV with a header row, using tablekit, with a test. tablekit is not imported when notecli's CLI module is imported (it is imported inside the export command, or deferred some other way that works on Python 3.10, not `lazy import` syntax). The tests pass and `importguard diff --strict` on the repo is clean.
