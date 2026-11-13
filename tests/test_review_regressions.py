@@ -31,7 +31,9 @@ def test_a1_head_cannot_choose_the_interpreter(repo, tmp_path):
     fake = tmp_path / "fakepy"
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
-    repo.write("pyproject.toml", POLICY + f'python = "{fake}"\n')
+    # TOML literal string: a Windows path has backslashes that a basic string
+    # would read as escapes.
+    repo.write("pyproject.toml", POLICY + f"python = '{fake}'\n")
     repo.write("src/app/core.py", "import heavydep\n")
     code, report = repo.run_json("diff", "--strict")
     assert code == 1
@@ -254,3 +256,24 @@ def test_base_needing_a_removed_dependency_is_compared_with_a_stub(repo):
     assert code == 0, report["findings"]
     [e] = report["entrypoints"]
     assert "olddep" in e["note"] and "stubbed" in e["note"]
+
+
+def test_submodule_registered_by_its_parent_joins_that_finding(repo):
+    # Found in CI on GitHub's CPython 3.15.2 build: math.integer appeared in
+    # sys.modules without an import statement (registered by C code during
+    # math's init), so it had no recorded importer and was reported as a
+    # separate "new stdlib module" instead of joining the package that pulled
+    # math in. Simulated here with a stdlib-named child registered directly.
+    repo.dist(
+        "regdep/__init__.py",
+        "import sys, json, importlib.machinery, types\n"
+        "child = types.ModuleType('json.registered_child')\n"
+        "child.__spec__ = importlib.machinery.ModuleSpec("
+        "'json.registered_child', None, origin='built-in')\n"
+        "sys.modules['json.registered_child'] = child\n",
+    )
+    repo.write("src/app/core.py", "import regdep\n")
+    _, report = repo.run_json("diff", "app.cli")
+    assert [f["kind"] for f in report["findings"]] == ["new_package"], report["findings"]
+    [f] = report["findings"]
+    assert "json" in f["data"]["packages"]["stdlib"]

@@ -32,6 +32,25 @@ def _main():
     os = sys.modules.get("os")
 
     pycache_prefix = getattr(sys, "pycache_prefix", None)
+    normcase = os.path.normcase if os is not None else (lambda p: p)
+    pycache_norm = normcase(pycache_prefix) if pycache_prefix else None
+
+    def bytecode_cache_path(path):
+        """Writes the import system makes for its bytecode cache."""
+        if isinstance(path, bytes):
+            path = path.decode("utf-8", "replace")
+        if not isinstance(path, str):
+            try:
+                path = os.fspath(path) if os is not None else str(path)
+            except TypeError:
+                return False
+            if isinstance(path, bytes):
+                path = path.decode("utf-8", "replace")
+        if "__pycache__" in path or path.endswith(".pyc"):
+            return True
+        # Compare raw, case-normalised paths (Windows paths in a repr() have
+        # doubled backslashes and never match).
+        return bool(pycache_norm) and normcase(path).startswith(pycache_norm)
 
     preloaded = set(sys.modules)
     records = {}  # name -> [name, parent, file, line]
@@ -150,9 +169,7 @@ def _main():
             if not isinstance(path, (str, bytes)):
                 return None
             spath = path if isinstance(path, str) else path.decode("utf-8", "replace")
-            if "__pycache__" in spath or spath.endswith(".pyc"):
-                return None
-            if pycache_prefix and spath.startswith(pycache_prefix):
+            if bytecode_cache_path(spath):
                 return None
             if isinstance(mode_, str):
                 writing = any(c in mode_ for c in "wax+")
@@ -160,10 +177,9 @@ def _main():
                 writing = isinstance(flags, int) and bool(flags & write_flags)
             return ("file_write", spath) if writing else None
         if event in fs_events:
-            detail = repr(args[0]) if args else event
-            if pycache_prefix and pycache_prefix in detail:
+            if args and bytecode_cache_path(args[0]):
                 return None
-            return "file_write", detail
+            return "file_write", repr(args[0]) if args else event
         if event == "sqlite3.connect":
             db = args[0] if args else ""
             if isinstance(db, bytes):

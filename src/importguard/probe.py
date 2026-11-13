@@ -187,10 +187,11 @@ def _reclassify_ignored(modules: list[Module], root: Path) -> None:
     if not tops:
         return
     try:
+        # Paths as arguments, not stdin: text-mode stdin on Windows turns "\n"
+        # into "\r\n" and git then never matches the path.
         proc = subprocess.run(
-            ["git", "check-ignore", "--stdin"],
+            ["git", "check-ignore", "--", *tops],
             cwd=root,
-            input="\n".join(tops) + "\n",
             capture_output=True,
             text=True,
             timeout=30,
