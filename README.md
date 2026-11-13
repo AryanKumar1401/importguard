@@ -187,7 +187,15 @@ The lockfile lives in the repository, so a change can rewrite it. Protect it wit
   - typed `remedies` (`defer_import` with the exact `replacement`, `request_approval`, `investigate`).
 - It's deterministic, needs no setup, and judges the change from outside it. An agent gets to green by fixing the import, not by editing the config.
 
-See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code Stop hook that runs `importguard diff` before an agent finishes its turn.
+**Claude skill.** [`skills/importguard`](skills/importguard/SKILL.md) teaches Claude when to run `importguard diff`, how to apply its fixes, and when to stop and ask you about a new dependency instead of silencing the check. To add it to a project for Claude Code:
+
+```bash
+mkdir -p .claude/skills/importguard
+curl -fsSL https://raw.githubusercontent.com/AryanKumar1401/importguard/main/skills/importguard/SKILL.md \
+  -o .claude/skills/importguard/SKILL.md
+```
+
+Use `~/.claude/skills/importguard/` instead to enable it for all your projects. See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code Stop hook that runs `importguard diff` before an agent finishes its turn.
 
 ## How it works
 

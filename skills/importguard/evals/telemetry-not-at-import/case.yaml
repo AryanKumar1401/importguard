@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: telemetry-not-at-import
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  The ping is sent when the CLI runs a command (from main() or a function it calls), never at import time, and failures are swallowed. Importing notecli's modules makes no network call; importguard diff --strict reports no side effects.

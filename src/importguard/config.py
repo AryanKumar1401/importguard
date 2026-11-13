@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field, replace
@@ -59,6 +60,18 @@ class Config:
         merged.forbid = sorted(set(self.defaults.forbid) | set(merged.forbid))
         merged.allow = sorted(set(self.defaults.allow) | set(merged.allow))
         return merged
+
+
+def resolve_interpreter(value: str | None, base: Path) -> str | None:
+    """An interpreter path given relative to ``base`` (".venv/bin/python"), made absolute.
+
+    Bare names ("python3.12") are left for PATH lookup. ``abspath``, not
+    ``resolve()``: a virtualenv's python is a symlink, and following it would
+    lose the virtualenv's packages.
+    """
+    if not value or not ("/" in value or "\\" in value) or os.path.isabs(value):
+        return value
+    return os.path.abspath(os.path.join(base, value))
 
 
 def find_pyproject(start: Path) -> Path | None:

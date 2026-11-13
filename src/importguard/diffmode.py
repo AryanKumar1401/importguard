@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .checks import check_result
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, load_config, resolve_interpreter
 from .findings import EntrypointSummary, Finding, Remedy, Report
 from .lockfile import LockEntry
 from .probe import ImportError_, ProbeResult, run_probe
@@ -209,7 +209,9 @@ def run_diff(
         # Runtime settings come from the same place as the policy: a change must not
         # be able to pick the interpreter or search path that judges it.
         runtime = policy_cfg
-        interpreter = python or runtime.python
+        # A relative interpreter in the policy (".venv/bin/python") lives next to
+        # the working tree, never inside the temporary base checkout.
+        interpreter = python or resolve_interpreter(runtime.python, config.root)
 
         def probe(ep: str, root: Path, stubs: list[str] | None = None) -> ProbeResult:
             return run_probe(

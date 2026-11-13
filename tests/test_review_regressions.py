@@ -238,7 +238,8 @@ def test_b11_markdown_for_informational_commands(project):
 def test_hook_ignores_tool_errors(tmp_path):
     hook = Path(__file__).resolve().parents[1] / "docs" / "agents.md"
     text = hook.read_text()
-    script = text.split("```bash\n", 1)[1].split("```", 1)[0]
+    blocks = [b.split("```", 1)[0] for b in text.split("```bash\n")[1:]]
+    [script] = [b for b in blocks if "stop_hook_active" in b]  # the Stop hook
     assert "1) # violations" in script and "*) # usage/config/tool error" in script
 
 
