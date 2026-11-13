@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/importguardpy)](https://pypi.org/project/importguardpy/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-importguard-blue?logo=github)](https://github.com/marketplace/actions/importguard)
 [![CI](https://github.com/AryanKumar1401/importguard/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanKumar1401/importguard/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/AryanKumar1401/importguard/blob/main/LICENSE)
 
 **A pull-request report of what a change adds to your Python program's startup, and why.**
 
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
       - run: pip install -e .               # your project, with its dependencies
-      - uses: AryanKumar1401/importguard@v0.2.2
+      - uses: AryanKumar1401/importguard@v0.2.3
 ```
 
 It needs no config file, and by default it can't break your CI: a new startup package is a warning, and only the rules listed under "What a pull request sees" fail the job.
@@ -92,7 +92,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: AryanKumar1401/importguard/comment@v0.2.2
+      - uses: AryanKumar1401/importguard/comment@v0.2.3
 ```
 
 `workflow_run` always runs this file from your default branch, with a write token. It downloads the report the PR's run uploaded and never checks out or runs the PR's code. The report comes from a run the fork controls, so it is handled as untrusted data:
@@ -210,7 +210,7 @@ The lockfile lives in the repository, so a change can rewrite it. Protect it wit
   - typed `remedies` (`defer_import` with the exact `replacement`, `request_approval`, `investigate`).
 - It's deterministic, needs no setup, and judges the change from outside it. An agent gets to green by fixing the import, not by editing the config.
 
-**Claude skill.** [`skills/importguard`](skills/importguard/SKILL.md) teaches Claude when to run `importguard diff`, how to apply its fixes, and when to stop and ask you about a new dependency instead of silencing the check. To add it to a project for Claude Code:
+**Claude skill.** [`skills/importguard`](https://github.com/AryanKumar1401/importguard/blob/main/skills/importguard/SKILL.md) teaches Claude when to run `importguard diff`, how to apply its fixes, and when to stop and ask you about a new dependency instead of silencing the check. To add it to a project for Claude Code:
 
 ```bash
 mkdir -p .claude/skills/importguard
@@ -218,7 +218,7 @@ curl -fsSL https://raw.githubusercontent.com/AryanKumar1401/importguard/main/ski
   -o .claude/skills/importguard/SKILL.md
 ```
 
-Use `~/.claude/skills/importguard/` instead to enable it for all your projects. See [docs/agents.md](docs/agents.md) for an `AGENTS.md` snippet and a Claude Code Stop hook that runs `importguard diff` before an agent finishes its turn.
+Use `~/.claude/skills/importguard/` instead to enable it for all your projects. See [docs/agents.md](https://github.com/AryanKumar1401/importguard/blob/main/docs/agents.md) for an `AGENTS.md` snippet and a Claude Code Stop hook that runs `importguard diff` before an agent finishes its turn.
 
 ## How it works
 
