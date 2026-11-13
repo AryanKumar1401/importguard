@@ -102,11 +102,7 @@ def render_text(report: Report, *, quiet: bool = False) -> str:
         out.append("")
 
     multi = len({f.entrypoint for f in report.findings}) > 1
-    shown = [
-        f
-        for f in report.findings
-        if not (quiet and f.severity == "info" and not f.kind.startswith("lazy_"))
-    ]
+    shown = [f for f in report.findings if not (quiet and f.severity == "info")]
     order = {"error": 0, "warning": 1, "info": 2}
     for f in sorted(shown, key=lambda f: order.get(f.severity, 3)):
         out.extend(_finding_text(f, s, multi))
@@ -162,28 +158,6 @@ def _render_show(report: Report, s: _Style) -> list[str]:
     return lines
 
 
-def _render_lazy(report: Report, s: _Style) -> list[str]:
-    d = report.data
-    if not d:
-        return []
-    lines = [
-        f"{d['entrypoint']}: {d['eager']['modules']} modules eager",
-    ]
-    if d.get("lazy"):
-        which = "the safe set" if d.get("tested") else "all candidates (untested)"
-        lines[0] += (
-            f" {s.arrow} {d['lazy']['modules']} with {which} lazy "
-            f"(-{d['eager']['modules'] - d['lazy']['modules']} modules, "
-            f"~{d['eager']['ms'] - d['lazy']['ms']:.0f}ms)"
-        )
-    lines.append(
-        f"{d['candidates']} candidate(s) {s.dot} {d['test_runs']} test run(s)"
-        + (f" {s.dot} {'; '.join(d['notes'])}" if d.get("notes") else "")
-    )
-    lines.append("")
-    return lines
-
-
 def _render_snapshot(report: Report, s: _Style) -> list[str]:
     lines = []
     for e in report.entrypoints:
@@ -200,7 +174,6 @@ def _render_snapshot(report: Report, s: _Style) -> list[str]:
 _COMMAND_RENDERERS: dict[str, Any] = {
     "why": _render_why,
     "show": _render_show,
-    "verify-lazy": _render_lazy,
     "snapshot": _render_snapshot,
 }
 
@@ -209,7 +182,12 @@ def render_markdown(report: Report) -> str:
     """Compact markdown for PR comments and GitHub step summaries."""
     if report.tool_error:
         return f"### importguard\n\n:x: {report.tool_error}\n"
-    status = ":white_check_mark:" if report.ok else ":x:"
+    if not report.ok:
+        status = ":x:"
+    elif report.count("warning"):
+        status = ":warning:"
+    else:
+        status = ":white_check_mark:"
     out = [f"### {status} importguard {report.command}", ""]
     if report.command in _COMMAND_RENDERERS:
         # Informational commands: their text rendering, verbatim.
@@ -231,11 +209,7 @@ def render_markdown(report: Report) -> str:
     icons = {"error": ":x:", "warning": ":warning:", "info": ":information_source:"}
     for f in report.findings:
         approved = bool(f.data.get("approved"))
-        if (
-            f.severity == "info"
-            and not approved
-            and f.kind not in ("lazy_safe", "lazy_unexercised")
-        ):
+        if f.severity == "info" and not approved:
             continue
         icon = ":white_check_mark:" if approved else icons.get(f.severity, "")
         out.append(f"{icon} **{f.entrypoint}**: {f.message}")

@@ -1,8 +1,8 @@
 name: importguard
 description: >-
-  Report what a pull request adds to your Python entrypoints' startup imports (new
-  dependencies, forbidden modules, import-time side effects) with the exact line to
-  change. No setup: the baseline is the PR's base commit.
+  A pull-request report of what a change adds to your Python program's startup: new
+  packages with the line that pulled them in, forbidden modules, import-time side
+  effects. No setup: the baseline is the PR's base commit.
 branding:
   icon: shield
   color: green
@@ -29,9 +29,9 @@ inputs:
     required: false
     default: python
   comment:
-    description: "Post (and keep updated) a PR comment with the report. Needs `pull-requests: write`."
+    description: "Keep one PR comment updated with the report (needs `pull-requests: write`; warns and carries on without it)."
     required: false
-    default: "false"
+    default: "true"
   github-token:
     description: Token used to post the PR comment.
     required: false

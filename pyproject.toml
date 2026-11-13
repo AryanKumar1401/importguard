@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "importguardpy"
 version = "0.2.0"
-description = "Runtime ground truth for Python imports: gate what loads at startup, catch import-time side effects, and prove which imports are safe to make lazy"
+description = "A pull-request report of what a change adds to your Python program's startup: new packages and the line that pulled them in, forbidden modules, import-time side effects"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -27,7 +27,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Build Tools",
@@ -44,8 +43,8 @@ keywords = [
     "cold-start",
     "profiling",
     "lint",
-    "lazy-imports",
-    "pep810",
+    "pull-request",
+    "code-review",
     "dependencies",
     "agents",
 ]

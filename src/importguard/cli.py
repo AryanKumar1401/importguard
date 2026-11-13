@@ -21,7 +21,6 @@ from .findings import (
     EntrypointSummary,
     Report,
 )
-from .lazy import LazyError, lazy_findings, verify_lazy
 from .lockfile import Lock, LockEntry, LockError, affected_entrypoints, load_lock
 from .probe import ProbeError, run_probe
 from .render import render_markdown, render_text
@@ -30,16 +29,6 @@ EPILOG = """\
 exit codes: 0 ok, 1 policy violations, 2 usage/config error, 3 tool error.
 Use --format json (or IMPORTGUARD_FORMAT=json) for machine-readable output;
 `importguard schema` prints its JSON Schema."""
-
-
-def _positive_int(value: str) -> int:
-    try:
-        n = int(value)
-    except ValueError:
-        n = 0
-    if n < 1:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
-    return n
 
 
 def _common() -> argparse.ArgumentParser:
@@ -61,9 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     common = _common()
     parser = argparse.ArgumentParser(
         prog="importguard",
-        description="Runtime ground truth for Python imports: see what loads at startup and "
-        "why, gate new imports and import-time side effects, and prove which imports are "
-        "safe to make lazy.",
+        description="Report what a change adds to your Python entrypoints' startup imports, "
+        "and why: new packages with the line that pulled them in, forbidden modules, and "
+        "import-time side effects. Start with `importguard diff`; no setup needed.",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -71,32 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser(
-        "snapshot",
-        parents=[common],
-        help="record what each entrypoint imports into importguard.lock",
-    )
-    p.add_argument("entrypoints", nargs="*", help="entrypoints to (re)record (default: all)")
-
-    p = sub.add_parser(
-        "check",
-        parents=[common],
-        help="fail on forbidden or unreviewed imports and import-time side effects",
-    )
-    p.add_argument("entrypoints", nargs="*", help="entrypoints to check (default: all)")
-    p.add_argument(
-        "--changed",
-        nargs="*",
-        metavar="FILE",
-        help="only check entrypoints whose startup graph includes these files "
-        "(no files: ask git for uncommitted changes)",
-    )
-    p.add_argument("--base", help="with --changed: also include changes since this git ref")
-    p.add_argument("--strict", action="store_true", help="exit non-zero on warnings too")
-
-    p = sub.add_parser(
         "diff",
         parents=[common],
-        help="report what this change adds to startup vs. its base commit (no setup needed)",
+        help="report what this change adds to startup vs. its base commit (start here)",
     )
     p.add_argument("entrypoints", nargs="*", help="entrypoints to compare (default: all)")
     p.add_argument(
@@ -118,6 +84,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--strict", action="store_true", help="exit non-zero on warnings too")
 
+    p = sub.add_parser(
+        "snapshot",
+        parents=[common],
+        help="lockfile mode: record what each entrypoint imports into importguard.lock",
+    )
+    p.add_argument("entrypoints", nargs="*", help="entrypoints to (re)record (default: all)")
+
+    p = sub.add_parser(
+        "check",
+        parents=[common],
+        help="lockfile mode: compare with importguard.lock (also catches dependency upgrades)",
+    )
+    p.add_argument("entrypoints", nargs="*", help="entrypoints to check (default: all)")
+    p.add_argument(
+        "--changed",
+        nargs="*",
+        metavar="FILE",
+        help="only check entrypoints whose startup graph includes these files "
+        "(no files: ask git for uncommitted changes)",
+    )
+    p.add_argument("--base", help="with --changed: also include changes since this git ref")
+    p.add_argument("--strict", action="store_true", help="exit non-zero on warnings too")
+
     p = sub.add_parser("why", parents=[common], help="show the import chain to a module")
     p.add_argument("entrypoint")
     p.add_argument("module")
@@ -134,20 +123,6 @@ def build_parser() -> argparse.ArgumentParser:
         "effects", parents=[common], help="list side effects performed during import"
     )
     p.add_argument("entrypoints", nargs="*")
-
-    p = sub.add_parser(
-        "verify-lazy",
-        parents=[common],
-        help="find imports that are safe to make lazy (Python 3.15+), verified by your tests",
-    )
-    p.add_argument("entrypoint")
-    p.add_argument(
-        "--test",
-        metavar="CMD",
-        help="test command run under a 3.15+ interpreter, e.g. 'python3.15 -m pytest -x -q'",
-    )
-    p.add_argument("--max-candidates", type=_positive_int, default=40)
-    p.add_argument("--test-timeout", type=float, default=900.0, help="seconds per test run")
 
     sub.add_parser("schema", help="print the JSON Schema of --format json output")
     return parser
@@ -392,52 +367,6 @@ def cmd_effects(args: argparse.Namespace, config: Config, python: str | None) ->
     return report
 
 
-def cmd_verify_lazy(args: argparse.Namespace, config: Config, python: str | None) -> Report:
-    progress = None
-    if _fmt(args) == "text" and not args.quiet:
-
-        def progress(msg: str) -> None:
-            sys.stderr.write(f"  ... {msg}\n")
-            sys.stderr.flush()
-
-    try:
-        outcome = verify_lazy(
-            args.entrypoint,
-            root=config.root,
-            python=python,
-            pythonpath=config.pythonpath,
-            test_command=args.test,
-            max_candidates=args.max_candidates,
-            probe_timeout=config.timeout,
-            test_timeout=args.test_timeout,
-            progress=progress,
-        )
-    except ProbeError as exc:
-        if "does not support lazy imports" in str(exc):
-            raise LazyError(
-                "verify-lazy needs a Python 3.15+ interpreter (PEP 810). "
-                "Point --python at one, e.g. --python python3.15"
-            ) from exc
-        raise
-    report = Report(command="verify-lazy", python=outcome.eager.python)
-    report.findings = lazy_findings(args.entrypoint, outcome, config.root, bool(args.test))
-    eager_ms = outcome.eager.total_ms
-    report.data = {
-        "entrypoint": args.entrypoint,
-        "eager": {"modules": len(outcome.eager.modules), "ms": round(eager_ms, 1)},
-        "lazy": (
-            {"modules": len(outcome.lazy.modules), "ms": round(outcome.lazy.total_ms, 1)}
-            if outcome.lazy
-            else None
-        ),
-        "candidates": len(outcome.candidates),
-        "tested": bool(args.test),
-        "test_runs": outcome.test_runs,
-        "notes": outcome.notes,
-    }
-    return report
-
-
 COMMANDS = {
     "snapshot": cmd_snapshot,
     "check": cmd_check,
@@ -445,7 +374,6 @@ COMMANDS = {
     "why": cmd_why,
     "show": cmd_show,
     "effects": cmd_effects,
-    "verify-lazy": cmd_verify_lazy,
 }
 
 
@@ -469,7 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, LockError) as exc:
         emit(Report(command=args.command, tool_error=str(exc)), args)
         return EXIT_USAGE
-    except (ProbeError, LazyError) as exc:
+    except ProbeError as exc:
         emit(Report(command=args.command, tool_error=str(exc)), args)
         return EXIT_TOOL_ERROR
     except Exception as exc:  # a bug in importguard must not read as "violations" (1)

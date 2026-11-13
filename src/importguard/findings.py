@@ -27,7 +27,7 @@ class Step:
 
 @dataclass
 class Remedy:
-    # defer_import | accept | request_approval | fix_error | investigate | make_lazy | keep_eager
+    # defer_import | accept | request_approval | fix_error | investigate
     kind: str
     summary: str
     file: str | None = None
@@ -156,9 +156,6 @@ REPORT_SCHEMA: dict[str, Any] = {
                             "side_effect",
                             "slow_import",
                             "not_locked",
-                            "lazy_safe",
-                            "lazy_unsafe",
-                            "lazy_unexercised",
                             "policy_changed",
                             "preloaded_code",
                         ]
@@ -195,8 +192,6 @@ REPORT_SCHEMA: dict[str, Any] = {
                                         "request_approval",
                                         "fix_error",
                                         "investigate",
-                                        "make_lazy",
-                                        "keep_eager",
                                     ]
                                 },
                                 "summary": {"type": "string"},

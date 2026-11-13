@@ -26,10 +26,10 @@ def test_clean_check_passes(project):
 def test_new_dependency_fails_with_chain_and_fix(project):
     project.run("snapshot")
     project.write("src/app/core.py", "import heavydep\n\ndef run():\n    return 1\n")
-    code, report = project.run_json("check")
+    code, report = project.run_json("check", "--strict")
     assert code == 1
     [finding] = [f for f in report["findings"] if f["kind"] == "new_package"]
-    assert finding["severity"] == "error"
+    assert finding["severity"] == "warning"  # a report by default
     assert finding["id"] == "new_package:app.cli:heavydep"
     assert finding["data"]["packages"]["third_party"] == ["heavydep"]
     assert "json" in finding["data"]["packages"]["stdlib"]
@@ -178,12 +178,12 @@ def test_why_and_show(project):
 def test_text_and_markdown_render(project):
     project.run("snapshot")
     project.write("src/app/core.py", "import heavydep\n")
-    code, text = project.run("check")
+    code, text = project.run("check", "--strict")
     assert code == 1
     assert "new third-party package at startup: heavydep" in text
     assert "src/app/core.py:1" in text
     code, md = project.run("check", "--format", "markdown")
-    assert md.startswith("### :x: importguard check")
+    assert md.startswith("### :warning: importguard check")  # reported, not failing
     assert "`importguard snapshot app.cli`" in md
 
 

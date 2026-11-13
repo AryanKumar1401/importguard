@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import shutil
 import subprocess
 import textwrap
 from contextlib import redirect_stdout
@@ -14,18 +13,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def find_python315() -> str | None:
-    candidates = [
-        os.environ.get("IMPORTGUARD_TEST_PYTHON315"),
-        shutil.which("python3.15"),
-        str(Path.home() / ".local/bin/python3.15"),
-    ]
-    for c in candidates:
-        if c and Path(c).exists():
-            return c
-    return None
 
 
 class Project:
@@ -101,14 +88,6 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Project:
     proj.dist("heavydep/__init__.py", "import json\nfrom heavydep import inner\n")
     proj.dist("heavydep/inner.py", "import decimal\n")
     return proj
-
-
-@pytest.fixture
-def python315() -> str:
-    py = find_python315()
-    if py is None:
-        pytest.skip("needs a Python 3.15 interpreter (set IMPORTGUARD_TEST_PYTHON315)")
-    return py
 
 
 def git(project: Project, *args: str) -> str:

@@ -20,34 +20,16 @@ env IMPORTGUARD_STUBS: comma-separated modules to replace with inert stand-ins
   when they are missing (used to import a base commit whose dependencies are
   no longer installed); stand-ins are not reported as loaded.
 
-argv: <out_path> <target> <mode> <lazy_spec_path>
-  mode: "eager"    - normal import
-        "discover" - eager import, plus record every lazy-eligible import
-                     statement (Python 3.15+, PEP 810)
-        "lazy"     - make the import statements listed in lazy_spec_path lazy
+argv: <out_path> <target>
 """
 
 import sys
 
 
 def _main():
-    out_path, target, mode, spec_path = sys.argv[1:5]
+    out_path, target = sys.argv[1:3]
     getframe = sys._getframe
     os = sys.modules.get("os")
-    source_cache = {}
-
-    def source_line(filename, lineno):
-        # Plain open(): io and the utf-8 codec are preloaded, so this imports
-        # nothing (linecache would pull in tokenize mid-import).
-        lines = source_cache.get(filename)
-        if lines is None:
-            try:
-                with open(filename, "rb") as fh:
-                    lines = fh.read().decode("utf-8", "replace").splitlines()
-            except Exception:
-                lines = []
-            source_cache[filename] = lines
-        return lines[lineno - 1] if 0 < lineno <= len(lines) else ""
 
     pycache_prefix = getattr(sys, "pycache_prefix", None)
 
@@ -65,7 +47,6 @@ def _main():
             confirmed.add(name)
 
     effects = []  # [category, event, detail, module, file, line]
-    statements = []  # [importer, name, fromlist, file, line] (discover mode)
     state = {"on": True}
 
     skip_suffixes = (
@@ -239,51 +220,6 @@ def _main():
         except Exception:
             pass
 
-    lazy_keys = None
-    lazy_hits = set()
-    if mode in ("discover", "lazy"):
-        if not hasattr(sys, "set_lazy_imports"):
-            raise SystemExit(
-                "importguard: this interpreter does not support lazy imports (PEP 810)"
-            )
-        if mode == "lazy":
-            lazy_keys = set()
-            with open(spec_path, encoding="utf-8") as fh:
-                for raw in fh.read().splitlines():
-                    if raw:
-                        imp, name, fl = raw.split("\t")
-                        lazy_keys.add((imp, name, fl))
-
-        def explicitly_lazy(f, name):
-            """Was this statement written lazy (or listed in __lazy_modules__)?"""
-            listed = f.f_globals.get("__lazy_modules__")
-            if listed is not None:
-                try:
-                    if name in listed:
-                        return True
-                except TypeError:
-                    pass
-            text = source_line(f.f_code.co_filename, f.f_lineno).lstrip()
-            return text.startswith("lazy ") or text.startswith("lazy\t")
-
-        def lazy_filter(importer, name, fromlist):
-            fl = ",".join(fromlist) if fromlist else ""
-            f = getframe(1)
-            if lazy_keys is not None:
-                key = (importer, name, fl)
-                if key in lazy_keys:
-                    lazy_hits.add(key)
-                    return True
-            # Anything else keeps the laziness its source asked for.
-            if explicitly_lazy(f, name):
-                return True
-            if lazy_keys is None and state["on"] and importer != "__main__":
-                statements.append([importer, name, fl, f.f_code.co_filename, f.f_lineno])
-            return False
-
-        sys.set_lazy_imports_filter(lazy_filter)
-        sys.set_lazy_imports("all")
-
     sys.addaudithook(audit)
     sys.meta_path.insert(0, Watcher)
 
@@ -455,7 +391,6 @@ def _main():
         "python": ".".join(str(v) for v in sys.version_info[:3]),
         "executable": sys.executable,
         "target": target,
-        "mode": mode,
         "error": err,
         "modules": modules,
         "startup": startup,
@@ -463,11 +398,6 @@ def _main():
             dict(zip(("category", "event", "detail", "module", "file", "line"), e, strict=True))
             for e in effects
         ],
-        "statements": [
-            dict(zip(("importer", "name", "fromlist", "file", "line"), s, strict=True))
-            for s in statements
-        ],
-        "lazy_hits": sorted("\t".join(k) for k in lazy_hits),
         "stubbed": sorted(stubbed),
     }
     with open(out_path, "w", encoding="utf-8") as fh:

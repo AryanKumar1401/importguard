@@ -54,21 +54,6 @@ class Effect:
 
 
 @dataclass
-class Statement:
-    """A lazy-eligible import statement seen during import (Python 3.15+)."""
-
-    importer: str
-    name: str
-    fromlist: str
-    file: str | None
-    line: int | None
-
-    @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.importer, self.name, self.fromlist)
-
-
-@dataclass
 class ImportError_:
     type: str
     message: str
@@ -87,8 +72,6 @@ class ProbeResult:
     # Non-stdlib modules already imported when the interpreter started
     # (sitecustomize, usercustomize, .pth files); code the probe cannot observe.
     startup: list[Module] = field(default_factory=list)
-    statements: list[Statement] = field(default_factory=list)
-    lazy_hits: list[str] = field(default_factory=list)
     stubbed: list[str] = field(default_factory=list)  # missing modules replaced by stand-ins
     total_us: int = 0
 
@@ -247,8 +230,6 @@ def run_probe(
     *,
     root: Path,
     python: str | None = None,
-    mode: str = "eager",
-    lazy_keys: list[tuple[str, str, str]] | None = None,
     pythonpath: list[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     stubs: list[str] | None = None,
@@ -262,10 +243,6 @@ def run_probe(
     interpreter = python or sys.executable
     with tempfile.TemporaryDirectory(prefix="importguard-") as tmp:
         out_path = Path(tmp) / "probe.json"
-        spec_path = Path(tmp) / "lazy.tsv"
-        spec_path.write_text(
-            "\n".join("\t".join(k) for k in (lazy_keys or [])) + "\n", encoding="utf-8"
-        )
         cmd = [
             interpreter,
             "-X",
@@ -274,8 +251,6 @@ def run_probe(
             _PROBE_SOURCE,
             str(out_path),
             target,
-            mode,
-            str(spec_path),
         ]
         try:
             proc = subprocess.run(
@@ -386,17 +361,6 @@ def _build_result(data: dict, stderr: str, root: Path) -> ProbeResult:  # type: 
         error=ImportError_(err["type"], err["message"], err["traceback"]) if err else None,
         attempted=attempted,
         startup=startup,
-        statements=[
-            Statement(
-                importer=s["importer"],
-                name=s["name"],
-                fromlist=s["fromlist"],
-                file=relpath(s["file"], root),
-                line=s["line"],
-            )
-            for s in data.get("statements", [])
-        ],
-        lazy_hits=data.get("lazy_hits", []),
         stubbed=data.get("stubbed", []),
         total_us=total,
     )
